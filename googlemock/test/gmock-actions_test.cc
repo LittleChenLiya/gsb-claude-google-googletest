@@ -2209,6 +2209,204 @@ TEST(ActionMacro, LargeArity) {
                                    14, 15, 16, 17, 18, 19)));
 }
 
+// ---------------------------------------------------------------------------
+// Tests for explicit action consumption reporting.
+//
+// Acceptance notes:
+//
+//  * A move-only (once) action must never execute a second time, whether
+//    through composition (DoAll) or through a default-action fallback; a
+//    moved-from action cannot be consumed at all.
+//  * A plain copyable action follows the original rules: it may be
+//    performed any number of times; only the consumption is recorded.
+//  * Action identity and call identity are separate.
+//  * Rejection messages never print call arguments (no Debug printing).
+//  * The default mock matching order is untouched.
+//
+// Focused, single-job acceptance build (small C++ command, -j1):
+//
+//   cmake -S . -B build-consumption
+//   cmake --build build-consumption --target gmock-actions_test -- -j1
+//   ./build-consumption/googlemock/gmock-actions_test \
+//       --gtest_filter='*Consumption*:*DoAll*'
+//
+// or as one direct compile command:
+//
+//   c++ -std=c++17 -Igoogletest/include -Igooglemock/include \
+//       -Igoogletest -Igooglemock -pthread \
+//       googlemock/test/gmock-actions_test.cc \
+//       googlemock/src/gmock-all.cc googletest/src/gtest-all.cc \
+//       googletest/src/gtest_main.cc -o gmock-actions_test
+
+// A non-copyable capture fixture: an action that captures this by move can
+// only be consumed once, because its body gives away the unique_ptr.
+struct NonCopyableCaptureFixture {
+  NonCopyableCaptureFixture() = default;
+  NonCopyableCaptureFixture(const NonCopyableCaptureFixture&) = delete;
+  NonCopyableCaptureFixture& operator=(const NonCopyableCaptureFixture&) =
+      delete;
+  NonCopyableCaptureFixture(NonCopyableCaptureFixture&&) = default;
+  NonCopyableCaptureFixture& operator=(NonCopyableCaptureFixture&&) = default;
+
+  std::unique_ptr<int> payload = std::make_unique<int>(42);
+};
+
+TEST(OnceActionConsumptionTest, FirstConsumptionRunsAndSecondIsRejected) {
+  int runs = 0;
+  OnceAction<int()> action([fixture = NonCopyableCaptureFixture{},
+                            &runs]() mutable -> int {
+    ++runs;
+    // Give away the unique_ptr: the body cannot meaningfully run twice.
+    std::unique_ptr<int> taken = std::move(fixture.payload);
+    return *taken;
+  });
+
+  const internal::ActionConsumptionReport before = action.ConsumptionReport();
+  EXPECT_TRUE(before.valid);
+  EXPECT_EQ(before.consumed_count, 0u);
+  EXPECT_EQ(before.rejected_count, 0u);
+  EXPECT_TRUE(action.IsConsumable());
+
+  // First consumption: runs normally.
+  EXPECT_EQ(std::move(action).Call(), 42);
+  EXPECT_EQ(runs, 1);
+
+  const internal::ActionConsumptionReport after = action.ConsumptionReport();
+  EXPECT_TRUE(after.valid);
+  EXPECT_EQ(after.consumed_count, 1u);
+  EXPECT_EQ(after.rejected_count, 0u);
+  EXPECT_FALSE(after.last_call_rejected);
+  EXPECT_NE(after.action_identity.value, 0u);
+  EXPECT_NE(after.last_call_identity.value, 0u);
+  EXPECT_FALSE(action.IsConsumable());
+
+  // Second consumption: explicitly rejected; the body must not run again.
+  // int has a built-in default value, so the rejected call yields 0.
+  int second = -1;
+  EXPECT_NONFATAL_FAILURE(second = std::move(action).Call(),
+                          "already consumed");
+  EXPECT_EQ(second, 0);
+  EXPECT_EQ(runs, 1);
+
+  const internal::ActionConsumptionReport rejected =
+      action.ConsumptionReport();
+  EXPECT_EQ(rejected.consumed_count, 1u);
+  EXPECT_EQ(rejected.rejected_count, 1u);
+  EXPECT_TRUE(rejected.last_call_rejected);
+}
+
+TEST(OnceActionConsumptionTest, MovedFromSourceCannotBeConsumed) {
+  int runs = 0;
+  OnceAction<void()> source([&] { ++runs; });
+  const internal::ActionIdentity source_id =
+      source.ConsumptionReport().action_identity;
+
+  OnceAction<void()> destination(std::move(source));
+
+  // The moved-from source owns no consumption state and cannot be consumed.
+  EXPECT_FALSE(source.IsConsumable());
+  EXPECT_FALSE(source.ConsumptionReport().valid);
+  EXPECT_NONFATAL_FAILURE(std::move(source).Call(), "moved from");
+  EXPECT_EQ(runs, 0);
+
+  // The destination keeps the same action identity and runs normally.
+  EXPECT_TRUE(destination.IsConsumable());
+  EXPECT_EQ(destination.ConsumptionReport().action_identity, source_id);
+  std::move(destination).Call();
+  EXPECT_EQ(runs, 1);
+}
+
+TEST(ActionConsumptionTest, CopyableActionFollowsOriginalRules) {
+  int runs = 0;
+  Action<void()> action([&] { ++runs; });
+  const internal::ActionIdentity action_id =
+      action.ConsumptionReport().action_identity;
+
+  // A plain copyable action may be performed any number of times (original
+  // rules); the consumption report only records the calls.
+  action.Perform(std::make_tuple());
+  const internal::ActionConsumptionReport first = action.ConsumptionReport();
+  action.Perform(std::make_tuple());
+  const internal::ActionConsumptionReport second = action.ConsumptionReport();
+
+  EXPECT_EQ(runs, 2);
+  EXPECT_EQ(second.consumed_count, 2u);
+  EXPECT_EQ(second.rejected_count, 0u);
+  EXPECT_FALSE(second.last_call_rejected);
+  EXPECT_TRUE(action.IsConsumable());
+
+  // The action identity is stable across calls; each call gets a fresh call
+  // identity. The two identities are separate concepts and separate types.
+  static_assert(
+      !std::is_same<internal::ActionIdentity, internal::CallIdentity>::value,
+      "action identity and call identity must be separate types");
+  EXPECT_EQ(first.action_identity, second.action_identity);
+  EXPECT_EQ(first.action_identity, action_id);
+  EXPECT_NE(first.last_call_identity, second.last_call_identity);
+
+  // A different action object has a different action identity.
+  Action<void()> other([&] {});
+  EXPECT_NE(other.ConsumptionReport().action_identity, action_id);
+}
+
+// A three-action example: a composition of three move-only actions must not
+// execute a second time.
+TEST(DoAllConsumptionTest, CompositeOnceActionRejectsSecondConsumption) {
+  int runs1 = 0, runs2 = 0, runs3 = 0;
+  OnceAction<void()> composite =
+      DoAll([&] { ++runs1; }, [&] { ++runs2; }, [&] { ++runs3; });
+
+  std::move(composite).Call();
+  EXPECT_EQ(runs1, 1);
+  EXPECT_EQ(runs2, 1);
+  EXPECT_EQ(runs3, 1);
+
+  // The whole composition is a once-action: the second consumption is
+  // rejected and none of the three actions runs again.
+  EXPECT_NONFATAL_FAILURE(std::move(composite).Call(), "already consumed");
+  EXPECT_EQ(runs1, 1);
+  EXPECT_EQ(runs2, 1);
+  EXPECT_EQ(runs3, 1);
+  EXPECT_EQ(composite.ConsumptionReport().consumed_count, 1u);
+  EXPECT_EQ(composite.ConsumptionReport().rejected_count, 1u);
+}
+
+// A three-action example: when a phase of the composition fails, the
+// remaining actions must not run at all.
+TEST(DoAllConsumptionTest, FailedPhaseStopsRemainingActions) {
+  int runs1 = 0, runs2 = 0, runs3 = 0;
+
+  OnceAction<void()> first([&] { ++runs1; });
+  std::move(first).Call();  // Consume the first action on its own.
+  ASSERT_EQ(runs1, 1);
+
+  // Compose the already-consumed action with two more actions. When the
+  // composition runs, the first phase is rejected and the composition stops:
+  // the next actions run 0 times.
+  OnceAction<void()> composite =
+      DoAll(std::move(first), [&] { ++runs2; }, [&] { ++runs3; });
+
+  EXPECT_NONFATAL_FAILURE(std::move(composite).Call(), "already consumed");
+  EXPECT_EQ(runs1, 1);  // Not run again.
+  EXPECT_EQ(runs2, 0);  // Stopped: 0 times.
+  EXPECT_EQ(runs3, 0);  // Stopped: 0 times.
+}
+
+// A move-only action used with WillOnce must not be re-executed when the
+// mock falls back to the default (repeated) action.
+TEST(OnceActionConsumptionTest, DefaultFallbackDoesNotReconsume) {
+  MockFunction<void()> mock;
+  int runs = 0;
+  EXPECT_CALL(mock, Call())
+      .WillOnce([&] { ++runs; })
+      .WillRepeatedly(Return());
+
+  mock.Call();
+  mock.Call();
+  mock.Call();
+  EXPECT_EQ(runs, 1);
+}
+
 }  // namespace
 }  // namespace testing
 

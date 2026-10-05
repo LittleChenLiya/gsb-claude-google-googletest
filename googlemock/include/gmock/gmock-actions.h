@@ -135,6 +135,8 @@
 #endif
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -380,6 +382,82 @@ typename std::add_const<T>::type& as_const(T& t) {
   return t;
 }
 
+// ---------------------------------------------------------------------------
+// Explicit action consumption reporting.
+//
+// The identity of an action object (which action it is) and the identity of
+// a call made through it (which invocation it is) are separate concepts, so
+// they are deliberately modeled as two distinct, non-interchangeable types
+// drawn from two independent counters.
+struct ActionIdentity {
+  uint64_t value = 0;
+};
+
+struct CallIdentity {
+  uint64_t value = 0;
+};
+
+inline bool operator==(ActionIdentity a, ActionIdentity b) {
+  return a.value == b.value;
+}
+inline bool operator!=(ActionIdentity a, ActionIdentity b) {
+  return !(a == b);
+}
+inline bool operator==(CallIdentity a, CallIdentity b) {
+  return a.value == b.value;
+}
+inline bool operator!=(CallIdentity a, CallIdentity b) {
+  return !(a == b);
+}
+
+// Returns a fresh, process-unique identity for a newly created action object.
+inline ActionIdentity NewActionIdentity() {
+  static std::atomic<uint64_t> next{0};
+  return ActionIdentity{++next};
+}
+
+// Returns a fresh, process-unique identity for a single action call.
+inline CallIdentity NewCallIdentity() {
+  static std::atomic<uint64_t> next{0};
+  return CallIdentity{++next};
+}
+
+// The mutable consumption state of an action. It is kept behind a shared_ptr
+// so that composite actions (e.g. DoAll) can observe the state of a
+// sub-action even after the sub-action object itself has been moved from.
+struct ActionConsumptionState {
+  ActionIdentity action_identity;
+  CallIdentity last_call_identity;
+  uint64_t consumed_count = 0;  // Number of successful consumptions.
+  uint64_t rejected_count = 0;  // Number of rejected consumption attempts.
+  bool last_call_rejected = false;
+};
+
+// A point-in-time, value-semantic snapshot of an action's consumption state.
+struct ActionConsumptionReport {
+  ActionIdentity action_identity;
+  CallIdentity last_call_identity;
+  uint64_t consumed_count = 0;
+  uint64_t rejected_count = 0;
+  bool last_call_rejected = false;
+  // False when the action object no longer owns a consumption state (e.g. it
+  // was moved from). A moved-from action cannot be consumed.
+  bool valid = false;
+};
+
+// Creates the consumption state for a freshly created action object.
+inline std::shared_ptr<ActionConsumptionState> NewActionConsumptionState() {
+  std::shared_ptr<ActionConsumptionState> state =
+      std::make_shared<ActionConsumptionState>();
+  state->action_identity = NewActionIdentity();
+  return state;
+}
+
+// Produces the result of a rejected action call WITHOUT executing the
+// action. Defined below, after DefaultValue.
+template <typename R>
+struct RejectedCallFallback;
+
 }  // namespace internal
 
 // Specialized for function types below.
@@ -490,9 +568,70 @@ class [[nodiscard]] OnceAction<Result(Args...)> final {
   OnceAction& operator=(const OnceAction&) = delete;
   OnceAction(OnceAction&&) = default;
 
+  // Returns true iff this action can still be consumed: it has not been
+  // moved from and it has not already been consumed.
+  bool IsConsumable() const {
+    return consumption_ != nullptr && consumption_->consumed_count == 0;
+  }
+
+  // Returns an explicit, value-semantic report of how this action has been
+  // consumed so far. The report of a moved-from action has valid == false.
+  internal::ActionConsumptionReport ConsumptionReport() const {
+    internal::ActionConsumptionReport report;
+    if (consumption_ != nullptr) {
+      report.valid = true;
+      report.action_identity = consumption_->action_identity;
+      report.last_call_identity = consumption_->last_call_identity;
+      report.consumed_count = consumption_->consumed_count;
+      report.rejected_count = consumption_->rejected_count;
+      report.last_call_rejected = consumption_->last_call_rejected;
+    }
+    return report;
+  }
+
+  // Returns an observer handle to this action's consumption state. The
+  // handle stays valid even after this object is moved from or destroyed, so
+  // composite actions (e.g. DoAll) can tell whether a phase actually ran.
+  std::shared_ptr<const internal::ActionConsumptionState> ConsumptionState()
+      const {
+    return consumption_;
+  }
+
   // Invoke the underlying action callable with which we were constructed,
   // handing it the supplied arguments.
+  //
+  // A move-only action must never execute twice, whether through action
+  // composition (e.g. DoAll) or through a default-action fallback, and a
+  // moved-from action cannot be consumed at all. Both cases are rejected
+  // explicitly (recorded in the consumption report and reported as a
+  // non-fatal failure) instead of silently running a moved-from callable.
+  //
+  // Note that the rejection message deliberately does NOT print the call
+  // arguments (no DebugString/PrintTo of Args): argument types are not
+  // required to be printable, and printing them here could itself fail.
   Result Call(Args... args) && {
+    if (consumption_ == nullptr) {
+      internal::Expect(false, __FILE__, __LINE__,
+                       "OnceAction consumption rejected: the action was "
+                       "moved from and can no longer be consumed.");
+      return internal::RejectedCallFallback<Result>::Get();
+    }
+    if (consumption_->consumed_count != 0) {
+      consumption_->rejected_count++;
+      consumption_->last_call_rejected = true;
+      consumption_->last_call_identity = internal::NewCallIdentity();
+      internal::Expect(
+          false, __FILE__, __LINE__,
+          "OnceAction consumption rejected: action #" +
+              std::to_string(consumption_->action_identity.value) +
+              " was already consumed; rejecting call #" +
+              std::to_string(consumption_->last_call_identity.value) +
+              ". A move-only action must not run a second time.");
+      return internal::RejectedCallFallback<Result>::Get();
+    }
+    consumption_->last_call_identity = internal::NewCallIdentity();
+    consumption_->last_call_rejected = false;
+    consumption_->consumed_count++;
     return function_(std::forward<Args>(args)...);
   }
 
@@ -558,6 +697,12 @@ class [[nodiscard]] OnceAction<Result(Args...)> final {
   };
 
   std::function<Result(Args...)> function_;
+
+  // The consumption state of this action. The (defaulted) move constructor
+  // moves it, so a moved-from OnceAction has a null state and explicitly
+  // rejects any consumption attempt.
+  std::shared_ptr<internal::ActionConsumptionState> consumption_ =
+      internal::NewActionConsumptionState();
 };
 
 // When an unexpected function call is encountered, Google Mock will
@@ -699,6 +844,33 @@ typename DefaultValue<T>::ValueProducer* DefaultValue<T>::producer_ = nullptr;
 template <typename T>
 T* DefaultValue<T&>::address_ = nullptr;
 
+namespace internal {
+
+// Produces the result of a rejected action call. The action itself is never
+// executed; the result comes from the same default-value machinery used for
+// default actions, so a rejected call still yields a well-defined result
+// whenever one exists. (No call arguments are printed here either.)
+template <typename R>
+struct RejectedCallFallback {
+  static R Get() {
+    if (!DefaultValue<R>::Exists()) {
+      // We cannot fabricate a result, so there is nothing better to do than
+      // to fail loudly.
+      Assert(false, __FILE__, __LINE__,
+             "An action call was rejected, and no default value is available "
+             "for the result type.");
+    }
+    return DefaultValue<R>::Get();
+  }
+};
+
+template <>
+struct RejectedCallFallback<void> {
+  static void Get() {}
+};
+
+}  // namespace internal
+
 // Implement this interface to define an action for function type F.
 template <typename F>
 class [[nodiscard]] ActionInterface {
@@ -784,6 +956,27 @@ class [[nodiscard]] Action<R(Args...)> {
   // Returns true if and only if this is the DoDefault() action.
   bool IsDoDefault() const { return fun_ == nullptr; }
 
+  // Returns true iff this action can be consumed. A copyable action follows
+  // the original rules: it can be performed any number of times, so this is
+  // only false for the DoDefault() action, which has no behavior of its own.
+  bool IsConsumable() const { return !IsDoDefault(); }
+
+  // Returns an explicit, value-semantic report of how this action has been
+  // consumed so far. Copies of an Action are handles to the same underlying
+  // concrete action, so they also share one consumption report.
+  internal::ActionConsumptionReport ConsumptionReport() const {
+    internal::ActionConsumptionReport report;
+    if (consumption_ != nullptr) {
+      report.valid = true;
+      report.action_identity = consumption_->action_identity;
+      report.last_call_identity = consumption_->last_call_identity;
+      report.consumed_count = consumption_->consumed_count;
+      report.rejected_count = consumption_->rejected_count;
+      report.last_call_rejected = consumption_->last_call_rejected;
+    }
+    return report;
+  }
+
   // Performs the action.  Note that this method is const even though
   // the corresponding method in ActionInterface is not.  The reason
   // is that a const Action<F> means that it cannot be re-bound to
@@ -794,6 +987,12 @@ class [[nodiscard]] Action<R(Args...)> {
     if (IsDoDefault()) {
       internal::IllegalDoDefault(__FILE__, __LINE__);
     }
+    // Copyable actions follow the original rules: performing them is always
+    // allowed, any number of times, so we only record the consumption (with
+    // a fresh call identity for each call) and never reject.
+    consumption_->last_call_identity = internal::NewCallIdentity();
+    consumption_->last_call_rejected = false;
+    consumption_->consumed_count++;
     return internal::Apply(fun_, ::std::move(args));
   }
 
@@ -845,6 +1044,12 @@ class [[nodiscard]] Action<R(Args...)> {
 
   // fun_ is an empty function if and only if this is the DoDefault() action.
   ::std::function<F> fun_;
+
+  // The consumption state of this action. Copies share it, matching the
+  // handle semantics of Action: an Action object and its copies refer to the
+  // same concrete action, so they report one shared consumption state.
+  ::std::shared_ptr<internal::ActionConsumptionState> consumption_ =
+      internal::NewActionConsumptionState();
 };
 
 // The PolymorphicAction class template makes it easy to implement a
@@ -1623,18 +1828,35 @@ class [[nodiscard]] DoAllAction<InitialAction, OtherActions...>
     struct OA {
       OnceAction<void(InitialActionArgType<Args>...)> initial_action;
       OnceAction<R(Args...)> remaining_actions;
+      // Observes the initial action's consumption state even after the
+      // initial action object itself has been moved from by its Call.
+      std::shared_ptr<const internal::ActionConsumptionState>
+          initial_consumption;
 
       R operator()(Args... args) && {
         std::move(initial_action)
             .Call(static_cast<InitialActionArgType<Args>>(args)...);
 
+        // If the initial phase was rejected (e.g. it was a move-only action
+        // that had already been consumed), the composition has failed: stop
+        // here and do not run any of the remaining actions.
+        if (initial_consumption != nullptr &&
+            initial_consumption->last_call_rejected) {
+          return internal::RejectedCallFallback<R>::Get();
+        }
+
         return std::move(remaining_actions).Call(std::forward<Args>(args)...);
       }
     };
 
+    OnceAction<void(InitialActionArgType<Args>...)> initial_action(
+        std::move(initial_action_));
+    std::shared_ptr<const internal::ActionConsumptionState>
+        initial_consumption = initial_action.ConsumptionState();
     return OA{
-        std::move(initial_action_),
+        std::move(initial_action),
         std::move(static_cast<Base&>(*this)),
+        std::move(initial_consumption),
     };
   }
 
