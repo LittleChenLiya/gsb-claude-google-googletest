@@ -1095,11 +1095,17 @@ class TypedExpectation<R(Args...)> : public ExpectationBase {
   friend class FunctionMocker;
 
   // An adaptor that turns a OneAction<F> into something compatible with
-  // Action<F>. Must be called at most once.
+  // Action<F>. Must be called at most once. The consumption state is shared
+  // across all copies of the enclosing Action, so that a second call is
+  // rejected regardless of which copy is used.
   struct ActionAdaptor {
     std::shared_ptr<OnceAction<R(Args...)>> once_action;
+    std::shared_ptr<bool> consumed = std::make_shared<bool>(false);
 
     R operator()(Args&&... args) const {
+      GTEST_CHECK_(!*consumed)
+          << "A OnceAction wrapped in an Action was called more than once.";
+      *consumed = true;
       return std::move(*once_action).Call(std::forward<Args>(args)...);
     }
   };

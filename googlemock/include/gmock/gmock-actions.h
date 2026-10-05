@@ -488,11 +488,36 @@ class [[nodiscard]] OnceAction<Result(Args...)> final {
   // semantically we should not be copyable.
   OnceAction(const OnceAction&) = delete;
   OnceAction& operator=(const OnceAction&) = delete;
-  OnceAction(OnceAction&&) = default;
+
+  OnceAction(OnceAction&& other) noexcept
+      : function_(std::move(other.function_)),
+        consumed_(other.consumed_) {
+    // A moved-from OnceAction is no longer consumable: its callable has been
+    // transferred to the new object.
+    other.MarkConsumed();
+  }
+
+  OnceAction& operator=(OnceAction&& other) noexcept {
+    if (this != &other) {
+      function_ = std::move(other.function_);
+      consumed_ = other.consumed_;
+      other.MarkConsumed();
+    }
+    return *this;
+  }
+
+  // Returns true if and only if this OnceAction has already been consumed,
+  // either by calling Call() or by moving from it. A consumed OnceAction must
+  // not be called again.
+  bool is_consumed() const { return consumed_; }
 
   // Invoke the underlying action callable with which we were constructed,
   // handing it the supplied arguments.
   Result Call(Args... args) && {
+    GTEST_CHECK_(!consumed_)
+        << "A OnceAction can be called at most once, but Call() was invoked "
+           "on an action that has already been consumed.";
+    consumed_ = true;
     return function_(std::forward<Args>(args)...);
   }
 
@@ -557,7 +582,13 @@ class [[nodiscard]] OnceAction<Result(Args...)> final {
     Callable callable;
   };
 
+  void MarkConsumed() { consumed_ = true; }
+
   std::function<Result(Args...)> function_;
+  // Whether this OnceAction has been consumed. A OnceAction is consumed when
+  // Call() is invoked or when it is moved from. The consumption state is tied
+  // to the action object (its identity), not to any particular call.
+  bool consumed_ = false;
 };
 
 // When an unexpected function call is encountered, Google Mock will

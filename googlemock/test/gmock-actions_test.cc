@@ -38,6 +38,7 @@
 #include <iterator>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -2006,6 +2007,79 @@ TEST(MockMethodTest, MoveOnlyAction) {
     EXPECT_CALL(mock, Call).WillOnce(Return17());
     EXPECT_EQ(17, mock.AsStdFunction()());
   }
+}
+
+// A OnceAction capturing a move-only type (unique_ptr) should work on the
+// first call, report itself as consumed afterwards, and a second call should
+// be explicitly rejected rather than silently misbehaving.
+TEST(MockMethodTest, OnceActionConsumptionTracking) {
+  auto ptr = std::make_unique<int>(42);
+
+  OnceAction<int()> once = [p = std::move(ptr)] { return *p; };
+  EXPECT_FALSE(once.is_consumed());
+
+  // Moving (without calling) transfers consumability: the source becomes
+  // consumed and the target remains consumable.
+  OnceAction<int()> moved = std::move(once);
+  EXPECT_TRUE(once.is_consumed());
+  EXPECT_FALSE(moved.is_consumed());
+
+  EXPECT_EQ(42, std::move(moved).Call());
+  EXPECT_TRUE(moved.is_consumed());
+}
+
+// A OnceAction capturing a unique_ptr and used via WillOnce should release the
+// pointer on the first call and must not release it again on subsequent calls
+// (the once action is not performed a second time).
+TEST(MockMethodTest, OnceActionUniquePtrCaptureFirstWorksOnly) {
+  auto ptr = std::make_unique<int>(42);
+  auto* const raw = ptr.get();
+
+  MockFunction<int*()> mock;
+  EXPECT_CALL(mock, Call)
+      .WillOnce([p = std::move(ptr)]() mutable { return p.release(); })
+      .WillRepeatedly(Return(nullptr));
+
+  int* const first = mock.AsStdFunction()();
+  EXPECT_EQ(raw, first);
+  delete first;
+
+  // The second call must not perform the once action again.
+  EXPECT_EQ(nullptr, mock.AsStdFunction()());
+}
+
+// In a DoAll composition, if one of the actions fails (throws), the actions
+// that follow it must not be called. This is the three-action example.
+TEST(MockMethodTest, DoAllFailureStopsSubsequentActions) {
+  int first_count = 0;
+  int second_count = 0;
+  int third_count = 0;
+
+  MockFunction<void()> mock;
+  EXPECT_CALL(mock, Call).WillOnce(DoAll(
+      [&] { ++first_count; },
+      [&] {
+        ++second_count;
+        throw std::runtime_error("boom");
+      },
+      [&] { ++third_count; }));
+
+  EXPECT_THROW(mock.AsStdFunction()(), std::runtime_error);
+  EXPECT_EQ(1, first_count);
+  EXPECT_EQ(1, second_count);
+  EXPECT_EQ(0, third_count);
+}
+
+// A copyable (non-once) action follows the original rules: it may be called
+// any number of times and reports no consumption state.
+TEST(MockMethodTest, CopyableActionNotConsumed) {
+  int call_count = 0;
+  MockFunction<void()> mock;
+  EXPECT_CALL(mock, Call).WillRepeatedly([&] { ++call_count; });
+  mock.AsStdFunction()();
+  mock.AsStdFunction()();
+  mock.AsStdFunction()();
+  EXPECT_EQ(3, call_count);
 }
 
 // It should be possible to use an action that returns a value with a mock
