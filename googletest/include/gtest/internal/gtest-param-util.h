@@ -558,29 +558,35 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
 
     std::string test_suite_name;
     std::string test_name;
-    for (const std::shared_ptr<TestInfo>& test_info : tests_) {
-      for (const InstantiationInfo& instantiation : instantiations_) {
-        const std::string& instantiation_name = instantiation.name;
-        ParamGenerator<ParamType> generator((*instantiation.generator)());
-        ParamNameGeneratorFunc* name_func = instantiation.name_func;
-        const char* file = instantiation.file;
-        int line = instantiation.line;
+    for (const InstantiationInfo& instantiation : instantiations_) {
+      const std::string& instantiation_name = instantiation.name;
+      ParamGenerator<ParamType> generator((*instantiation.generator)());
+      ParamNameGeneratorFunc* name_func = instantiation.name_func;
+      const char* file = instantiation.file;
+      const int line = instantiation.line;
 
-        if (!instantiation_name.empty())
-          test_suite_name = instantiation_name + "/";
-        else
-          test_suite_name.clear();
-        test_suite_name += test_suite_name_;
-
+      // Phase 1: build an explicit naming plan for the whole instantiation
+      // before registering anything. The name function is invoked exactly
+      // once per parameter (no matter how many TEST_P patterns the suite
+      // has), and every generated name is validated up front, so a conflict
+      // discovered late in the sequence can never leave partially-registered
+      // tests behind and no test body is ever executed for a rejected plan.
+      // When the suite has no TEST_P patterns no names are needed, so the
+      // generator is left unevaluated (the historical behavior).
+      std::vector<ParamType> planned_params;
+      std::vector<std::string> planned_names;
+      if (!tests_.empty()) {
+        std::map<std::string, size_t> name_to_first_index;
         size_t i = 0;
-        std::set<std::string> test_param_names;
         for (const auto& param : generator) {
-          generated_instantiations = true;
-
-          test_name.clear();
-
           std::string param_name =
               name_func(TestParamInfo<ParamType>(param, i));
+
+          GTEST_CHECK_(!param_name.empty())
+              << "Parameterized test name generated for the parameter at "
+                 "index "
+              << i << " is empty (empty names are not allowed), in " << file
+              << " line " << line << std::endl;
 
           GTEST_CHECK_(IsValidParamName(param_name))
               << "Parameterized test name '" << param_name
@@ -588,29 +594,51 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
                  "non-alphanumeric characters other than underscores), in "
               << file << " line " << line << "" << std::endl;
 
-          GTEST_CHECK_(test_param_names.count(param_name) == 0)
-              << "Duplicate parameterized test name '" << param_name << "', in "
-              << file << " line " << line << std::endl;
+          const auto first_occurrence = name_to_first_index.find(param_name);
+          GTEST_CHECK_(first_occurrence == name_to_first_index.end())
+              << "Duplicate parameterized test name '" << param_name
+              << "' (generated for the parameters at indexes "
+              << first_occurrence->second << " and " << i << "), in " << file
+              << " line " << line << std::endl;
+
+          name_to_first_index.emplace(param_name, i);
+          planned_params.push_back(param);
+          planned_names.push_back(std::move(param_name));
+          ++i;
+        }  // for param
+      }
+
+      // Phase 2: the naming plan is fully validated, so register every
+      // planned (test pattern, parameter) combination.
+      if (!planned_params.empty()) generated_instantiations = true;
+
+      if (!instantiation_name.empty())
+        test_suite_name = instantiation_name + "/";
+      else
+        test_suite_name.clear();
+      test_suite_name += test_suite_name_;
+
+      for (const std::shared_ptr<TestInfo>& test_info : tests_) {
+        for (size_t j = 0; j < planned_params.size(); ++j) {
+          test_name.clear();
 
           if (!test_info->test_base_name.empty()) {
             test_name.append(test_info->test_base_name).append("/");
           }
-          test_name += param_name;
-
-          test_param_names.insert(std::move(param_name));
+          test_name += planned_names[j];
 
           MakeAndRegisterTestInfo(
               test_suite_name, test_name.c_str(),
               /*type_param=*/nullptr,  // No type parameter.
-              PrintToString(param).c_str(), test_info->code_location,
-              GetTestSuiteTypeId(),
+              PrintToString(planned_params[j]).c_str(),
+              test_info->code_location, GetTestSuiteTypeId(),
               SuiteApiResolver<TestSuite>::GetSetUpCaseOrSuite(file, line),
               SuiteApiResolver<TestSuite>::GetTearDownCaseOrSuite(file, line),
-              test_info->test_meta_factory->CreateTestFactory(param));
-          ++i;
-        }  // for param
-      }  // for instantiation
-    }  // for test_info
+              test_info->test_meta_factory->CreateTestFactory(
+                  planned_params[j]));
+        }  // for planned param
+      }  // for test_info
+    }  // for instantiation
 
     if (!generated_instantiations) {
       // There are no generaotrs, or they all generate nothing ...

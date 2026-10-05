@@ -63,6 +63,8 @@ cc_test(
             "googletest-listener-test.cc",
             "googletest-message-test.cc",
             "googletest-output-test_.cc",
+            "googletest-param-name-plan-invalid-test_.cc",
+            "googletest-param-name-plan-test.cc",
             "googletest-param-test-invalid-name1-test_.cc",
             "googletest-param-test-invalid-name2-test_.cc",
             "googletest-param-test-test",
@@ -148,6 +150,28 @@ cc_test(
         "googletest-param-test2-test.cc",
     ],
     deps = ["//:gtest"],
+)
+
+cc_test(
+    name = "googletest-param-name-plan-test",
+    size = "small",
+    srcs = ["googletest-param-name-plan-test.cc"],
+    deps = ["//:gtest_main"],
+)
+
+cc_binary(
+    name = "googletest-param-name-plan-invalid-test_",
+    testonly = 1,
+    srcs = ["googletest-param-name-plan-invalid-test_.cc"],
+    deps = ["//:gtest"],
+)
+
+py_test(
+    name = "googletest-param-name-plan-invalid-test",
+    size = "small",
+    srcs = ["googletest-param-name-plan-invalid-test.py"],
+    data = [":googletest-param-name-plan-invalid-test_"],
+    deps = [":gtest_test_utils"],
 )
 
 cc_test(

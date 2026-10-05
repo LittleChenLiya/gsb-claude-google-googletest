@@ -45,12 +45,15 @@ def TestExitCodeAndOutput(command):
   """Runs the given command and verifies its exit code and output."""
 
   err = "Duplicate parameterized test name 'a'"
+  # The duplicate 'a' is generated for the parameters at indexes 0 and 2.
+  indexes = 'indexes 0 and 2'
 
   p = gtest_test_utils.Subprocess(command)
   Assert(p.terminated_by_signal)
 
   # Check for appropriate output
   Assert(err in p.output)
+  Assert(indexes in p.output)
 
 
 class GTestParamTestInvalidName2Test(gtest_test_utils.TestCase):

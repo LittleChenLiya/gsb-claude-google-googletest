@@ -1212,6 +1212,28 @@ NOTE: test names must be non-empty, unique, and may only contain ASCII
 alphanumeric characters. In particular, they
 [should not contain underscores](faq.md#why-should-test-suite-names-and-test-names-not-contain-underscore)
 
+#### How generated names are validated
+
+Google Test builds an explicit *naming plan* for each
+`INSTANTIATE_TEST_SUITE_P()` instantiation before registering any of its
+tests:
+
+*   The name generator is invoked **exactly once per parameter**, no matter
+    how many `TEST_P()` patterns the suite contains. The
+    `testing::TestParamInfo` argument always carries the parameter value and
+    its index within the instantiation.
+*   Every generated name is checked up front: it must be non-empty (empty
+    names are rejected explicitly), contain only ASCII alphanumeric
+    characters or underscores, and be unique within the instantiation. A
+    duplicate name is reported together with the indexes of *both*
+    conflicting parameters.
+*   Only after the whole plan has been validated is any test registered. If
+    any name is rejected, **no** test of that instantiation is registered
+    (not even the ones with valid names) and no test body is ever executed.
+
+When no custom name generator is given, the default registration mode names
+tests by their parameter index (`0`, `1`, ...) and behaves exactly as before.
+
 ```c++
 class MyTestSuite : public testing::TestWithParam<int> {};
 

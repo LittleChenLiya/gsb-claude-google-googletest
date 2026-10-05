@@ -545,6 +545,14 @@ auto ConvertGenerator(Gen&& gen, Func&& f) {
 // Note: test names must be non-empty, unique, and may only contain ASCII
 // alphanumeric characters or underscore. Because PrintToString adds quotes
 // to std::string and C strings, it won't work for these types.
+//
+// Google Test builds an explicit naming plan before registering any test of
+// an instantiation: the name function is invoked exactly once per parameter
+// (regardless of how many TEST_P patterns the suite has), and every generated
+// name is checked for emptiness, allowed characters, and uniqueness up front.
+// If any name is rejected, no test of that instantiation is registered at all
+// and no test body is executed; a duplicate name is reported together with
+// the indexes of both conflicting parameters.
 
 #define GTEST_EXPAND_(arg) arg
 #define GTEST_GET_FIRST_(first, ...) first
