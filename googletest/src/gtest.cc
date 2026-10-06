@@ -615,6 +615,31 @@ void InsertSyntheticTestCase(const std::string& name, CodeLocation location,
       });
 }
 
+// If an explicit parameterized naming plan fails validation, emit a test
+// case reporting the collected errors. No tests are registered for the
+// offending instantiation; this synthetic test makes sure the problem
+// cannot go unnoticed.
+void InsertInvalidParamNamePlanTestCase(const std::string& test_suite_name,
+                                        const CodeLocation& location,
+                                        const std::string& error_message) {
+  const std::string message =
+      "Parameterized test suite " + test_suite_name +
+      " has an invalid explicit naming plan. None of the test cases of the "
+      "offending instantiation were registered and none of its test bodies "
+      "were run.\n\n" +
+      error_message;
+
+  const std::string full_name =
+      "InvalidParameterizedTestNamePlan<" + test_suite_name + ">";
+  RegisterTest(  //
+      "GoogleTestVerification", full_name.c_str(),
+      nullptr,  // No type parameter.
+      nullptr,  // No value parameter.
+      location.file.c_str(), location.line, [message, location] {
+        return new FailureTest(location, message, /*as_error=*/true);
+      });
+}
+
 void RegisterTypeParameterizedTestSuite(const char* test_suite_name,
                                         CodeLocation code_location) {
   GetUnitTestImpl()->type_parameterized_test_registry().RegisterTestSuite(

@@ -1251,6 +1251,47 @@ INSTANTIATE_TEST_SUITE_P(
     });
 ```
 
+#### Explicit Naming Plans with `INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN`
+
+`INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN(prefix, suite, generator,
+name_generator)` works like `INSTANTIATE_TEST_SUITE_P` with a custom name
+generator, but registers the instantiation through an explicit naming plan
+with stronger guarantees:
+
+*   The name generator is invoked **exactly once per parameter** (even when
+    the suite contains several `TEST_P` definitions), receiving the parameter
+    and its 0-based index.
+*   **All names are validated before any test is registered.** Every name
+    must be non-empty (empty names are explicitly rejected), unique within
+    the instantiation, and contain only alphanumeric characters and
+    underscores. Validation never interleaves with registration, so a
+    conflict late in the parameter sequence cannot leave a partially
+    registered instantiation behind.
+*   **Registration is atomic per instantiation.** If the plan is valid, all
+    of its tests are registered. If it is invalid, zero tests are registered
+    for the instantiation, none of its test bodies is ever executed, and
+    every problem - including both parameter indices of a duplicate name -
+    is reported on stderr and as a synthetic test failure in the
+    `GoogleTestVerification` test suite. Other instantiations and test
+    suites are unaffected.
+
+```cpp
+class MyTestSuite : public testing::TestWithParam<std::string> {};
+
+TEST_P(MyTestSuite, Works) {}
+
+INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN(
+    MyGroup, MyTestSuite, testing::Values("cat", "dog", "cat"),
+    [](const testing::TestParamInfo<MyTestSuite::ParamType>& info) {
+      return info.param;
+    });
+// Registers nothing for MyGroup: the name "cat" is generated for parameter
+// indices 0 and 2, and the error report shows both indices.
+```
+
+The default `INSTANTIATE_TEST_SUITE_P` registration mode is unaffected and
+keeps its historical behavior.
+
 ## Typed Tests
 
 Suppose you have multiple implementations of the same interface and want to make

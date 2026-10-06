@@ -65,6 +65,7 @@ cc_test(
             "googletest-output-test_.cc",
             "googletest-param-test-invalid-name1-test_.cc",
             "googletest-param-test-invalid-name2-test_.cc",
+            "googletest-param-test-naming-plan-test.cc",
             "googletest-param-test-test",
             "googletest-param-test-test.cc",
             "googletest-param-test2-test.cc",
@@ -147,6 +148,15 @@ cc_test(
         "googletest-param-test-test.h",
         "googletest-param-test2-test.cc",
     ],
+    deps = ["//:gtest"],
+)
+
+# This test has its own main() and verifies the explicit parameterized
+# naming plan of INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN.
+cc_test(
+    name = "googletest-param-test-naming-plan-test",
+    size = "small",
+    srcs = ["googletest-param-test-naming-plan-test.cc"],
     deps = ["//:gtest"],
 )
 

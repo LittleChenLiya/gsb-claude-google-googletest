@@ -234,6 +234,36 @@ To overcome this problem you can specify the generated type explicitly:
 dangling reference because the type deduction strips off the reference and the
 `const`).
 
+### INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN {#INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN}
+
+`INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN(`*`InstantiationName`*`,`*`TestSuiteName`*`,`*`param_generator`*`,`*`name_generator`*`)`
+
+Like [`INSTANTIATE_TEST_SUITE_P`](#INSTANTIATE_TEST_SUITE_P) with an explicit
+*`name_generator`*, but registers the instantiation through an explicit naming
+plan:
+
+*   The *`name_generator`* is invoked exactly once per parameter (even if the
+    test suite contains several [`TEST_P`](#TEST_P) definitions), receiving the
+    parameter and its 0-based index via
+    [`TestParamInfo`](#TestParamInfo).
+*   All generated names are validated up front - before a single test is
+    registered. Every name must be non-empty (empty names are explicitly
+    rejected), unique within the instantiation, and contain only alphanumeric
+    characters and underscores.
+*   If the plan is valid, all tests of the instantiation are registered
+    atomically; there is no interleaving of registration and name validation,
+    so a conflict late in the parameter sequence cannot leave a partially
+    registered instantiation behind.
+*   If the plan is invalid, no test is registered for the instantiation and
+    none of its test bodies is ever executed. Every problem - including both
+    parameter indices of a duplicate name - is reported on stderr and as a
+    synthetic test failure in the `GoogleTestVerification` test suite, while
+    other instantiations and test suites are registered and run normally.
+
+The default `INSTANTIATE_TEST_SUITE_P` registration mode is unaffected and
+keeps its historical behavior (invalid or duplicate names are rejected with a
+fatal check).
+
 ### TYPED_TEST_SUITE {#TYPED_TEST_SUITE}
 
 `TYPED_TEST_SUITE(`*`TestFixtureName`*`,`*`Types`*`)`

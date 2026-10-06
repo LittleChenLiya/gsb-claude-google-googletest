@@ -204,6 +204,7 @@ if (gtest_build_tests)
   cxx_test(googletest-options-test gtest_main)
   cxx_test(googletest-param-test-test gtest
     test/googletest-param-test2-test.cc)
+  cxx_test(googletest-param-test-naming-plan-test gtest)
   cxx_test(googletest-port-test gtest_main)
   cxx_test(gtest_pred_impl_unittest gtest_main)
   cxx_test(gtest_premature_exit_test gtest

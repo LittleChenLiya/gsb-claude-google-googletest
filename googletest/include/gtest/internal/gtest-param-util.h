@@ -496,6 +496,33 @@ struct GTEST_API_ MarkAsIgnored {
 GTEST_API_ void InsertSyntheticTestCase(const std::string& name,
                                         CodeLocation location, bool has_test_p);
 
+// If an explicit parameterized naming plan (see
+// INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN) fails validation, inserts a
+// synthetic test case that reports the collected errors as a test failure.
+// No tests are registered for the offending instantiation, so this makes
+// sure the problem cannot go unnoticed.
+GTEST_API_ void InsertInvalidParamNamePlanTestCase(
+    const std::string& test_suite_name, const CodeLocation& location,
+    const std::string& error_message);
+
+// INTERNAL IMPLEMENTATION - DO NOT USE IN USER CODE.
+//
+// Selects how the parameter names produced by an instantiation are
+// validated before the corresponding tests are registered.
+enum class NamePlanMode {
+  // Legacy mode (used by INSTANTIATE_TEST_SUITE_P): invalid or duplicate
+  // names are rejected with a fatal check, preserving the historical
+  // behavior.
+  kLegacy,
+  // Explicit naming plan mode (used by
+  // INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN): all names are generated
+  // (calling the name generator exactly once per parameter) and validated
+  // for allowed characters and uniqueness before any test is registered.
+  // If the plan is invalid, no tests are registered for the instantiation
+  // and the problem is reported as a test failure instead of aborting.
+  kExplicitNamePlan,
+};
+
 // INTERNAL IMPLEMENTATION - DO NOT USE IN USER CODE.
 //
 // ParameterizedTestSuiteInfo accumulates tests obtained from TEST_P
@@ -540,12 +567,12 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
   }
   // INSTANTIATE_TEST_SUITE_P macro uses AddGenerator() to record information
   // about a generator.
-  int AddTestSuiteInstantiation(std::string instantiation_name,
-                                GeneratorCreationFunc* func,
-                                ParamNameGeneratorFunc* name_func,
-                                const char* file, int line) {
+  int AddTestSuiteInstantiation(
+      std::string instantiation_name, GeneratorCreationFunc* func,
+      ParamNameGeneratorFunc* name_func, const char* file, int line,
+      NamePlanMode name_plan_mode = NamePlanMode::kLegacy) {
     instantiations_.emplace_back(std::move(instantiation_name), func, name_func,
-                                 file, line);
+                                 file, line, name_plan_mode);
     return 0;  // Return value used only to run this method in namespace scope.
   }
   // UnitTest class invokes this method to register tests in this test suite
@@ -556,15 +583,116 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
   void RegisterTests() override {
     bool generated_instantiations = false;
 
+    // Phase 1: build the naming plan for every instantiation up front.
+    //
+    // Every parameter name is generated (calling the name generator exactly
+    // once per parameter) and validated before a single test is registered,
+    // so an invalid or duplicate name late in the parameter sequence can
+    // never leave a partially registered instantiation behind.
+    struct InstantiationPlan {
+      std::vector<std::string> names;  // names[i] belongs to parameter i.
+      bool valid = true;
+    };
+    std::vector<InstantiationPlan> plans;
+    plans.reserve(instantiations_.size());
+
+    for (const InstantiationInfo& instantiation : instantiations_) {
+      ParamGenerator<ParamType> generator((*instantiation.generator)());
+      ParamNameGeneratorFunc* name_func = instantiation.name_func;
+      const char* file = instantiation.file;
+      const int line = instantiation.line;
+
+      InstantiationPlan plan;
+      // Maps each generated name to the index of the first parameter that
+      // produced it, so that a duplicate can be reported with both
+      // parameter indices.
+      std::map<std::string, size_t> first_index_by_name;
+      std::string plan_errors;
+      size_t i = 0;
+      for (const auto& param : generator) {
+        if (!tests_.empty()) generated_instantiations = true;
+
+        std::string param_name =
+            name_func(TestParamInfo<ParamType>(param, i));
+
+        if (instantiation.name_plan_mode == NamePlanMode::kExplicitNamePlan) {
+          // Explicit naming plan: validate every name up front and collect
+          // all problems. Nothing is registered for this instantiation if
+          // any of them is found.
+          if (param_name.empty()) {
+            plan.valid = false;
+            plan_errors +=
+                "Parameterized test name generated for parameter index " +
+                std::to_string(i) + " is empty, which is not allowed, in " +
+                file + " line " + std::to_string(line) + "\n";
+          } else if (!IsValidParamName(param_name)) {
+            plan.valid = false;
+            plan_errors +=
+                "Parameterized test name '" + param_name +
+                "' (parameter index " + std::to_string(i) +
+                ") is invalid (contains spaces, dashes, or any "
+                "non-alphanumeric characters other than underscores), in " +
+                file + " line " + std::to_string(line) + "\n";
+          } else {
+            const auto it = first_index_by_name.find(param_name);
+            if (it != first_index_by_name.end()) {
+              plan.valid = false;
+              plan_errors +=
+                  "Duplicate parameterized test name '" + param_name +
+                  "' generated for parameter indices " +
+                  std::to_string(it->second) + " and " + std::to_string(i) +
+                  ", in " + file + " line " + std::to_string(line) + "\n";
+            }
+          }
+        } else {
+          GTEST_CHECK_(IsValidParamName(param_name))
+              << "Parameterized test name '" << param_name
+              << "' is invalid (contains spaces, dashes, or any "
+                 "non-alphanumeric characters other than underscores), in "
+              << file << " line " << line << "" << std::endl;
+
+          GTEST_CHECK_(first_index_by_name.count(param_name) == 0)
+              << "Duplicate parameterized test name '" << param_name << "', in "
+              << file << " line " << line << std::endl;
+        }
+
+        first_index_by_name.emplace(param_name, i);
+        plan.names.push_back(std::move(param_name));
+        ++i;
+      }  // for param
+
+      if (!plan.valid) {
+        // Do not register any test for this instantiation. Report the
+        // problem on stderr and as a synthetic test failure instead, so it
+        // cannot go unnoticed. The test bodies of this instantiation are
+        // never executed.
+        GTEST_LOG_(ERROR) << "Invalid explicit naming plan for parameterized "
+                             "test suite "
+                          << test_suite_name_ << ":\n"
+                          << plan_errors;
+        InsertInvalidParamNamePlanTestCase(
+            (instantiation.name.empty() ? "" : instantiation.name + "/") +
+                test_suite_name_,
+            CodeLocation(file, line), plan_errors);
+      }
+
+      plans.push_back(std::move(plan));
+    }  // for instantiation
+
+    // Phase 2: register the tests. Instantiations whose naming plan failed
+    // validation contribute no tests at all.
     std::string test_suite_name;
     std::string test_name;
     for (const std::shared_ptr<TestInfo>& test_info : tests_) {
-      for (const InstantiationInfo& instantiation : instantiations_) {
+      for (size_t inst = 0; inst < instantiations_.size(); ++inst) {
+        const InstantiationInfo& instantiation = instantiations_[inst];
+        const InstantiationPlan& plan = plans[inst];
+        if (!plan.valid) continue;
+
         const std::string& instantiation_name = instantiation.name;
         ParamGenerator<ParamType> generator((*instantiation.generator)());
-        ParamNameGeneratorFunc* name_func = instantiation.name_func;
         const char* file = instantiation.file;
-        int line = instantiation.line;
+        const int line = instantiation.line;
 
         if (!instantiation_name.empty())
           test_suite_name = instantiation_name + "/";
@@ -573,31 +701,13 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
         test_suite_name += test_suite_name_;
 
         size_t i = 0;
-        std::set<std::string> test_param_names;
         for (const auto& param : generator) {
-          generated_instantiations = true;
-
           test_name.clear();
-
-          std::string param_name =
-              name_func(TestParamInfo<ParamType>(param, i));
-
-          GTEST_CHECK_(IsValidParamName(param_name))
-              << "Parameterized test name '" << param_name
-              << "' is invalid (contains spaces, dashes, or any "
-                 "non-alphanumeric characters other than underscores), in "
-              << file << " line " << line << "" << std::endl;
-
-          GTEST_CHECK_(test_param_names.count(param_name) == 0)
-              << "Duplicate parameterized test name '" << param_name << "', in "
-              << file << " line " << line << std::endl;
 
           if (!test_info->test_base_name.empty()) {
             test_name.append(test_info->test_base_name).append("/");
           }
-          test_name += param_name;
-
-          test_param_names.insert(std::move(param_name));
+          test_name += plan.names[i];
 
           MakeAndRegisterTestInfo(
               test_suite_name, test_name.c_str(),
@@ -637,22 +747,24 @@ class [[nodiscard]] ParameterizedTestSuiteInfo
   using TestInfoContainer = ::std::vector<std::shared_ptr<TestInfo>>;
   // Records data received from INSTANTIATE_TEST_SUITE_P macros:
   //  <Instantiation name, Sequence generator creation function,
-  //     Name generator function, Source file, Source line>
+  //     Name generator function, Source file, Source line, Name plan mode>
   struct InstantiationInfo {
     InstantiationInfo(std::string name_in, GeneratorCreationFunc* generator_in,
                       ParamNameGeneratorFunc* name_func_in, const char* file_in,
-                      int line_in)
+                      int line_in, NamePlanMode name_plan_mode_in)
         : name(std::move(name_in)),
           generator(generator_in),
           name_func(name_func_in),
           file(file_in),
-          line(line_in) {}
+          line(line_in),
+          name_plan_mode(name_plan_mode_in) {}
 
     std::string name;
     GeneratorCreationFunc* generator;
     ParamNameGeneratorFunc* name_func;
     const char* file;
     int line;
+    NamePlanMode name_plan_mode;
   };
   typedef ::std::vector<InstantiationInfo> InstantiationContainer;
 

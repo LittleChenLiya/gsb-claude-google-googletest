@@ -583,6 +583,51 @@ auto ConvertGenerator(Gen&& gen, Func&& f) {
               &gtest_##prefix##test_suite_name##_EvalGenerateName_, __FILE__, \
               __LINE__)
 
+// INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN(prefix, test_suite_name,
+//                                         generator, name_generator)
+//
+// Like INSTANTIATE_TEST_SUITE_P with an explicit name generator, but
+// registers the instantiation through an explicit naming plan:
+//
+//  * The name generator is invoked exactly once per parameter (even if the
+//    test suite contains several TEST_P definitions), receiving the test
+//    suite's parameter and its 0-based index.
+//  * All generated names are validated up front - before a single test is
+//    registered - for the usual rules (names must be non-empty, unique
+//    within the instantiation, and contain only alphanumeric characters
+//    and underscores). An empty name is always rejected.
+//  * If the plan is valid, all tests of the instantiation are registered
+//    atomically. If it is invalid, no test is registered for the
+//    instantiation (no partial registration is left behind and none of its
+//    test bodies is ever executed); every problem, including both
+//    parameter indices of a duplicate name, is reported on stderr and as a
+//    synthetic test failure in the GoogleTestVerification test suite.
+//
+// The default INSTANTIATE_TEST_SUITE_P registration mode is unaffected and
+// keeps its historical behavior.
+#define INSTANTIATE_TEST_SUITE_P_WITH_NAME_PLAN(prefix, test_suite_name,    \
+                                                generator, name_generator)  \
+  static ::testing::internal::ParamGenerator<test_suite_name::ParamType>    \
+  gtest_##prefix##test_suite_name##_EvalGenerator_() {                      \
+    return generator;                                                       \
+  }                                                                         \
+  static ::std::string gtest_##prefix##test_suite_name##_EvalGenerateName_( \
+      const ::testing::TestParamInfo<test_suite_name::ParamType>& info) {   \
+    return name_generator(info);                                            \
+  }                                                                         \
+  [[maybe_unused]] static int gtest_##prefix##test_suite_name##_dummy_ =    \
+      ::testing::UnitTest::GetInstance()                                    \
+          ->parameterized_test_registry()                                   \
+          .GetTestSuitePatternHolder<test_suite_name>(                      \
+              GTEST_STRINGIFY_(test_suite_name),                            \
+              ::testing::internal::CodeLocation(__FILE__, __LINE__))        \
+          ->AddTestSuiteInstantiation(                                      \
+              GTEST_STRINGIFY_(prefix),                                     \
+              &gtest_##prefix##test_suite_name##_EvalGenerator_,            \
+              &gtest_##prefix##test_suite_name##_EvalGenerateName_,         \
+              __FILE__, __LINE__,                                           \
+              ::testing::internal::NamePlanMode::kExplicitNamePlan)
+
 // Allow Marking a Parameterized test class as not needing to be instantiated.
 #define GTEST_ALLOW_UNINSTANTIATED_PARAMETERIZED_TEST(T)                  \
   namespace gtest_do_not_use_outside_namespace_scope {}                   \
