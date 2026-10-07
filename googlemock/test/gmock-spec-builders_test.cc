@@ -987,8 +987,9 @@ TEST(UnexpectedCallTest, GeneratesFailureForVoidFunction) {
       "Google Mock tried the following 1 expectation, but it didn't match:");
   EXPECT_NONFATAL_FAILURE(
       a1.DoA(9),
+      "           Excluded: call count exhausted (saturated); arguments "
+      "don't match\n"
       "  Expected arg #0: is equal to 1\n"
-      "           Actual: 9\n"
       "         Expected: to be called once\n"
       "           Actual: called once - saturated and active");
 
@@ -1005,15 +1006,16 @@ TEST(UnexpectedCallTest, GeneratesFailureForVoidFunction) {
   EXPECT_NONFATAL_FAILURE(
       a2.DoA(2),
       "tried expectation #0: EXPECT_CALL(a2, DoA(1))...\n"
+      "           Excluded: call count exhausted (saturated); arguments "
+      "don't match\n"
       "  Expected arg #0: is equal to 1\n"
-      "           Actual: 2\n"
       "         Expected: to be called once\n"
       "           Actual: called once - saturated and active");
   EXPECT_NONFATAL_FAILURE(
       a2.DoA(2),
       "tried expectation #1: EXPECT_CALL(a2, DoA(3))...\n"
+      "           Excluded: arguments don't match\n"
       "  Expected arg #0: is equal to 3\n"
-      "           Actual: 2\n"
       "         Expected: to be called once\n"
       "           Actual: never called - unsatisfied and active");
   a2.DoA(3);
@@ -1033,8 +1035,9 @@ TEST(UnexpectedCallTest, GeneartesFailureForNonVoidFunction) {
       "Google Mock tried the following 1 expectation, but it didn't match:");
   EXPECT_NONFATAL_FAILURE(
       b1.DoB(2),
+      "           Excluded: call count exhausted (saturated); arguments "
+      "don't match\n"
       "  Expected arg #0: is equal to 1\n"
-      "           Actual: 2\n"
       "         Expected: to be called once\n"
       "           Actual: called once - saturated and active");
 }
@@ -1047,8 +1050,8 @@ TEST(UnexpectedCallTest, RetiredExpectation) {
 
   b.DoB(1);
   EXPECT_NONFATAL_FAILURE(b.DoB(1),
-                          "         Expected: the expectation is active\n"
-                          "           Actual: it is retired");
+                          "           Excluded: expectation is retired; "
+                          "call count exhausted (saturated)\n");
 }
 
 // Tests that Google Mock explains that an expectation that doesn't
@@ -1058,9 +1061,89 @@ TEST(UnexpectedCallTest, UnmatchedArguments) {
   EXPECT_CALL(b, DoB(1));
 
   EXPECT_NONFATAL_FAILURE(b.DoB(2),
-                          "  Expected arg #0: is equal to 1\n"
-                          "           Actual: 2\n");
+                          "           Excluded: arguments don't match\n"
+                          "  Expected arg #0: is equal to 1\n");
   b.DoB(1);
+}
+
+// Counting predicates used to verify that the diagnostic printed for
+// an unmatched call does not re-run custom matchers.
+int g_counting_matcher1_evals = 0;
+int g_counting_matcher2_evals = 0;
+
+bool CountingMatcher1(int n) {
+  ++g_counting_matcher1_evals;
+  return n == 1;
+}
+
+bool CountingMatcher2(int n) {
+  ++g_counting_matcher2_evals;
+  return n == 2;
+}
+
+// Tests that the read-only diagnostic printed for an unmatched call
+// labels the expectations excluded because their call count is
+// exhausted and because their arguments don't match, without
+// re-running custom matchers, without changing the number of
+// failures, and without reactivating retired expectations.
+TEST(UnexpectedCallTest, ExclusionDiagnosticDoesNotRerunMatchers) {
+  MockA a;
+  // Expectation #0 retires once its only allowed call is exhausted;
+  // expectation #1 never matches the arguments of the unexpected calls
+  // made below.
+  EXPECT_CALL(a, DoA(Truly(&CountingMatcher1))).RetiresOnSaturation();
+  EXPECT_CALL(a, DoA(Truly(&CountingMatcher2)));
+
+  g_counting_matcher1_evals = 0;
+  g_counting_matcher2_evals = 0;
+
+  a.DoA(1);  // Matches expectation #0, which then retires.
+  // Expectations are scanned in LIFO order, so both matchers ran once.
+  ASSERT_EQ(1, g_counting_matcher1_evals);
+  ASSERT_EQ(1, g_counting_matcher2_evals);
+
+  // This call matches no expectation: #0 is retired after its call
+  // count was exhausted, and #1's matcher rejects the argument.
+  {
+    ::testing::TestPartResultArray failures;
+    {
+      ::testing::ScopedFakeTestPartResultReporter reporter(&failures);
+      a.DoA(3);
+    }
+    // The original failure result is preserved: exactly one non-fatal
+    // failure for the unexpected call.
+    ASSERT_EQ(1, failures.size());
+    const ::testing::TestPartResult& r = failures.GetTestPartResult(0);
+    EXPECT_EQ(::testing::TestPartResult::kNonFatalFailure, r.type());
+    // The diagnostic labels both exclusion reasons.
+    EXPECT_THAT(
+        r.message(),
+        HasSubstr("tried expectation #0: EXPECT_CALL(a, "
+                  "DoA(Truly(&CountingMatcher1)))...\n"
+                  "           Excluded: expectation is retired; call count "
+                  "exhausted (saturated)"));
+    EXPECT_THAT(
+        r.message(),
+        HasSubstr("tried expectation #1: EXPECT_CALL(a, "
+                  "DoA(Truly(&CountingMatcher2)))...\n"
+                  "           Excluded: arguments don't match"));
+  }
+  // The diagnostic is read-only: it must not have re-run the custom
+  // matchers.  Matcher2 ran exactly once more (for the matching scan
+  // of the call above); the retired expectation's matcher did not run
+  // at all.
+  EXPECT_EQ(1, g_counting_matcher1_evals);
+  EXPECT_EQ(2, g_counting_matcher2_evals);
+
+  // The retired expectation is not reactivated by the diagnostic: a
+  // call with its original arguments is still unexpected.
+  EXPECT_NONFATAL_FAILURE(a.DoA(1), "Unexpected mock function call");
+  EXPECT_EQ(1, g_counting_matcher1_evals);
+  EXPECT_EQ(3, g_counting_matcher2_evals);
+
+  a.DoA(2);  // Satisfies expectation #1.
+  EXPECT_EQ(1, g_counting_matcher1_evals);
+  EXPECT_EQ(4, g_counting_matcher2_evals);
 }
 
 // Tests that Google Mock explains that an expectation with

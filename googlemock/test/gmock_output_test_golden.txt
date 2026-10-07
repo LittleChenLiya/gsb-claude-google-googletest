@@ -36,8 +36,9 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar2(0, _))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 0
-           Actual: 1
+  Expected arg #1: is anything
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -50,8 +51,9 @@ Unexpected mock function call - returning directly.
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar3(0, _))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 0
-           Actual: 1
+  Expected arg #1: is anything
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -97,15 +99,13 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 2 expectations, but none matched:
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(_, _))...
-         Expected: the expectation is active
-           Actual: it is retired
+           Excluded: expectation is retired; call count exhausted (saturated)
          Expected: to be called once
            Actual: called once - saturated and retired
 FILE:#: tried expectation #1: EXPECT_CALL(foo_, Bar2(0, 0))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 0
-           Actual: 1
   Expected arg #1: is equal to 0
-           Actual: 1
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -119,11 +119,15 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 2 expectations, but none matched:
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(0, 0))...
-  Expected arg #0: is equal to 0
-           Actual: 1
+           Excluded: pre-requisites are not satisfied
+         Expected: all pre-requisites are satisfied
+           Actual: the following immediate pre-requisites are not satisfied:
+FILE:#: pre-requisite #0
+                   (end of pre-requisites)
          Expected: to be called once
            Actual: never called - unsatisfied and active
 FILE:#: tried expectation #1: EXPECT_CALL(foo_, Bar2(1, _))...
+           Excluded: pre-requisites are not satisfied
          Expected: all pre-requisites are satisfied
            Actual: the following immediate pre-requisites are not satisfied:
 FILE:#: pre-requisite #0
@@ -141,11 +145,13 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 2 expectations, but none matched:
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(0, 0))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 0
-           Actual: 1
+  Expected arg #1: is equal to 0
          Expected: to be called once
            Actual: never called - unsatisfied and active
 FILE:#: tried expectation #1: EXPECT_CALL(foo_, Bar2(1, _))...
+           Excluded: pre-requisites are not satisfied
          Expected: all pre-requisites are satisfied
            Actual: the following immediate pre-requisites are not satisfied:
 FILE:#: pre-requisite #0
@@ -184,10 +190,10 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar(Ref(s), _, Ge(0)))...
+           Excluded: arguments don't match
   Expected arg #0: references the variable @0x# "Hi"
-           Actual: "Ho", which is located @0x#
+  Expected arg #1: is anything
   Expected arg #2: is >= 0
-           Actual: -0.1
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -201,8 +207,8 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar2(Ge(2), Ge(1)))...
+           Excluded: extra matcher doesn't match
     Expected args: are a pair where the first >= the second
-           Actual: don't match
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -216,10 +222,9 @@ Unexpected mock function call - returning default value.
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar2(Ge(2), Ge(1)))...
+           Excluded: arguments don't match
   Expected arg #0: is >= 2
-           Actual: 1
-    Expected args: are a pair where the first >= the second
-           Actual: don't match
+  Expected arg #1: is >= 1
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -234,10 +239,9 @@ FILE:#:
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar2(2, 2))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 2
-           Actual: 1
   Expected arg #1: is equal to 2
-           Actual: 0
          Expected: to be called once
            Actual: never called - unsatisfied and active
 
@@ -250,10 +254,9 @@ FILE:#:
 Google Mock tried the following 1 expectation, but it didn't match:
 
 FILE:#: EXPECT_CALL(foo_, Bar2(2, 2))...
+           Excluded: arguments don't match
   Expected arg #0: is equal to 2
-           Actual: 0
   Expected arg #1: is equal to 2
-           Actual: 0
          Expected: to be called once
            Actual: never called - unsatisfied and active
 

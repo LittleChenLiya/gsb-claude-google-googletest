@@ -670,6 +670,19 @@ class [[nodiscard]] TuplePrefix {
            std::get<N - 1>(matcher_tuple).Matches(std::get<N - 1>(value_tuple));
   }
 
+  // TuplePrefix<N>::DescribeMatchersTo(matchers, os) describes the
+  // first N matchers of the tuple, one per line, WITHOUT evaluating
+  // any of them.  This is used by read-only diagnostics that must not
+  // run user matchers.
+  template <typename MatcherTuple>
+  static void DescribeMatchersTo(const MatcherTuple& matchers,
+                                 ::std::ostream* os) {
+    TuplePrefix<N - 1>::DescribeMatchersTo(matchers, os);
+    *os << "  Expected arg #" << N - 1 << ": ";
+    std::get<N - 1>(matchers).DescribeTo(os);
+    *os << "\n";
+  }
+
   // TuplePrefix<N>::ExplainMatchFailuresTo(matchers, values, os)
   // describes failures in matching the first N fields of matchers
   // against the first N fields of values.  If there is no failure,
@@ -714,6 +727,10 @@ class [[nodiscard]] TuplePrefix<0> {
     return true;
   }
 
+  template <typename MatcherTuple>
+  static void DescribeMatchersTo(const MatcherTuple& /* matchers */,
+                                 ::std::ostream* /* os */) {}
+
   template <typename MatcherTuple, typename ValueTuple>
   static void ExplainMatchFailuresTo(const MatcherTuple& /* matchers */,
                                      const ValueTuple& /* values */,
@@ -744,6 +761,17 @@ void ExplainMatchFailureTupleTo(const MatcherTuple& matchers,
                                 const ValueTuple& values, ::std::ostream* os) {
   TuplePrefix<std::tuple_size<MatcherTuple>::value>::ExplainMatchFailuresTo(
       matchers, values, os);
+}
+
+// Describes the matchers in a matcher tuple, one per line, WITHOUT
+// evaluating any of them.  This is used by read-only diagnostics (e.g.
+// the report printed for an unmatched mock function call) that must
+// not run user matchers.
+template <typename MatcherTuple>
+void DescribeMatcherTupleTo(const MatcherTuple& matchers,
+                            ::std::ostream* os) {
+  TuplePrefix<std::tuple_size<MatcherTuple>::value>::DescribeMatchersTo(
+      matchers, os);
 }
 
 // TransformTupleValues and its helper.

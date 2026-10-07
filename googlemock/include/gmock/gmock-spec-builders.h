@@ -1116,7 +1116,19 @@ class TypedExpectation<R(Args...)> : public ExpectationBase {
   bool Matches(const ArgumentTuple& args) const
       GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
     g_gmock_mutex.AssertHeld();
-    return TupleMatches(matchers_, args) && extra_matcher_.Matches(args);
+    // Evaluates the matchers exactly once and caches the outcome, so
+    // that the read-only diagnostic printed when a call matches no
+    // expectation (see ExplainExclusionTo()) can explain the exclusion
+    // without re-running user matchers.
+    const bool args_matched = TupleMatches(matchers_, args);
+    // Preserves the original short-circuit: the extra matcher (the
+    // .With() clause) is evaluated only when all argument matchers
+    // match.
+    const bool extra_matched = args_matched && extra_matcher_.Matches(args);
+    match_diag_evaluated_ = true;
+    match_diag_args_matched_ = args_matched;
+    match_diag_extra_matched_ = extra_matched;
+    return args_matched && extra_matched;
   }
 
   // Returns true if and only if this expectation should handle the given
@@ -1130,32 +1142,80 @@ class TypedExpectation<R(Args...)> : public ExpectationBase {
     // or RetiresOnSaturation() clause), we check it when the
     // expectation is used for the first time.
     CheckActionCountIfNotDone();
+    // Invalidates the cached match outcome for this call; Matches()
+    // records a fresh outcome if the argument matchers are evaluated
+    // below.  This keeps the diagnostic cache in sync with the call
+    // being scanned, even when the matchers are short-circuited (e.g.
+    // because the expectation is retired).
+    match_diag_evaluated_ = false;
     return !is_retired() && AllPrerequisitesAreSatisfied() && Matches(args);
   }
 
-  // Describes the result of matching the arguments against this
-  // expectation to the given ostream.
-  void ExplainMatchResultTo(const ArgumentTuple& args, ::std::ostream* os) const
+  // Describes why this expectation was excluded from handling the
+  // current call, as part of the report printed when the call matches
+  // no expectation.  This is a read-only diagnostic: it relies solely
+  // on immutable state and on the match outcome cached by
+  // ShouldHandleArguments() during the matching scan.  It never
+  // re-runs user matchers, never changes the call count, and never
+  // reactivates a retired expectation.
+  void ExplainExclusionTo(::std::ostream* os) const
       GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
     g_gmock_mutex.AssertHeld();
 
+    *os << "           Excluded: ";
+    bool has_reason = false;
+    const auto list_reason = [&has_reason, os](const char* reason) {
+      if (has_reason) {
+        *os << "; ";
+      }
+      *os << reason;
+      has_reason = true;
+    };
     if (is_retired()) {
-      *os << "         Expected: the expectation is active\n"
-          << "           Actual: it is retired\n";
-    } else if (!Matches(args)) {
-      if (!TupleMatches(matchers_, args)) {
-        ExplainMatchFailureTupleTo(matchers_, args, os);
-      }
-      StringMatchResultListener listener;
-      if (!extra_matcher_.MatchAndExplain(args, &listener)) {
-        *os << "    Expected args: ";
-        extra_matcher_.DescribeTo(os);
-        *os << "\n           Actual: don't match";
+      list_reason("expectation is retired");
+    }
+    if (IsSaturated()) {
+      list_reason("call count exhausted (saturated)");
+    }
+    const bool prereqs_unsatisfied =
+        !is_retired() && !AllPrerequisitesAreSatisfied();
+    if (prereqs_unsatisfied) {
+      list_reason("pre-requisites are not satisfied");
+    }
+    // The cached outcome is meaningful only for the call that was just
+    // scanned; it is unavailable when the matchers were short-circuited
+    // (e.g. because the expectation is retired or its pre-requisites
+    // are unsatisfied).
+    const bool args_mismatched =
+        match_diag_evaluated_ && !match_diag_args_matched_;
+    const bool extra_mismatched = match_diag_evaluated_ &&
+                                  match_diag_args_matched_ &&
+                                  !match_diag_extra_matched_;
+    if (args_mismatched) {
+      list_reason("arguments don't match");
+    }
+    if (extra_mismatched) {
+      list_reason("extra matcher doesn't match");
+    }
+    if (!has_reason) {
+      // Defensive: every expectation described here was rejected by the
+      // matching scan, so at least one reason above should apply.
+      *os << "it does not match the call";
+    }
+    *os << "\n";
 
-        internal::PrintIfNotEmpty(listener.str(), os);
-        *os << "\n";
-      }
-    } else if (!AllPrerequisitesAreSatisfied()) {
+    // Prints the details of each exclusion reason.  Everything below is
+    // computed from matcher descriptions and the cached match outcome;
+    // no matcher is evaluated here.
+    if (args_mismatched) {
+      DescribeMatcherTupleTo(matchers_, os);
+    }
+    if (extra_mismatched) {
+      *os << "    Expected args: ";
+      extra_matcher_.DescribeTo(os);
+      *os << "\n";
+    }
+    if (prereqs_unsatisfied) {
       *os << "         Expected: all pre-requisites are satisfied\n"
           << "           Actual: the following immediate pre-requisites "
           << "are not satisfied:\n";
@@ -1168,12 +1228,6 @@ class TypedExpectation<R(Args...)> : public ExpectationBase {
         *os << "pre-requisite #" << i++ << "\n";
       }
       *os << "                   (end of pre-requisites)\n";
-    } else {
-      // This line is here just for completeness' sake.  It will never
-      // be executed as currently the ExplainMatchResultTo() function
-      // is called only when the mock function call does NOT match the
-      // expectation.
-      *os << "The call matches the expectation.\n";
     }
   }
 
@@ -1258,6 +1312,16 @@ class TypedExpectation<R(Args...)> : public ExpectationBase {
   ArgumentMatcherTuple matchers_;
   Matcher<const ArgumentTuple&> extra_matcher_;
   Action<F> repeated_action_;
+
+  // Cached outcome of the latest Matches() evaluation, recorded while
+  // the expectations were scanned for the call being dispatched.  This
+  // lets ExplainExclusionTo() describe why the expectation was excluded
+  // without re-running user matchers.  The cache is meaningful only for
+  // the duration of that scan and only when match_diag_evaluated_ is
+  // true.  Guarded by g_gmock_mutex.
+  mutable bool match_diag_evaluated_ = false;
+  mutable bool match_diag_args_matched_ = false;
+  mutable bool match_diag_extra_matched_ = false;
 
   TypedExpectation(const TypedExpectation&) = delete;
   TypedExpectation& operator=(const TypedExpectation&) = delete;
@@ -1699,13 +1763,15 @@ class FunctionMocker<R(Args...)> final : public UntypedFunctionMockerBase {
     g_gmock_mutex.AssertHeld();
     *os << "\nUnexpected mock function call - ";
     DescribeDefaultActionTo(args, os);
-    PrintTriedExpectationsLocked(args, why);
+    PrintTriedExpectationsLocked(why);
   }
 
   // Prints a list of expectations that have been tried against the
-  // current mock function call.
-  void PrintTriedExpectationsLocked(const ArgumentTuple& args,
-                                    ::std::ostream* why) const
+  // current mock function call.  The exclusion reason of each
+  // expectation is a read-only diagnostic computed from the match
+  // outcome cached during the matching scan; no matcher is re-run
+  // here.
+  void PrintTriedExpectationsLocked(::std::ostream* why) const
       GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
     g_gmock_mutex.AssertHeld();
     const size_t count = untyped_expectations_.size();
@@ -1722,7 +1788,7 @@ class FunctionMocker<R(Args...)> final : public UntypedFunctionMockerBase {
         *why << "tried expectation #" << i << ": ";
       }
       *why << expectation->source_text() << "...\n";
-      expectation->ExplainMatchResultTo(args, why);
+      expectation->ExplainExclusionTo(why);
       expectation->DescribeCallCountTo(why);
     }
   }
