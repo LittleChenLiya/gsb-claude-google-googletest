@@ -1434,6 +1434,41 @@ struct UntypedFunctionMockerBase::FailureCleanupHandler {
   }
 };
 
+// Explains why an expectation was excluded from handling a mock call
+// that no expectation matched.
+//
+// This is a read-only diagnostic: the reason is derived from the
+// expectation's state and from the match result already produced by the
+// single expectation-selection pass of the call.  Computing it never
+// re-runs user matchers and never mutates expectation state (in
+// particular, retired expectations are not reactivated), so the
+// original expectation selection and the failure count are unaffected.
+enum class ExpectationExclusionReason {
+  // The expectation is retired or saturated: its call count is
+  // exhausted.
+  kCallCountExhausted,
+  // The expectation has unsatisfied pre-requisites.
+  kPrerequisitesUnsatisfied,
+  // The expectation's argument matchers did not match the call's
+  // arguments.
+  kArgumentsMismatch,
+};
+
+// Returns a human-readable, read-only description of why an expectation
+// was excluded from handling a call.
+inline const char* ExpectationExclusionReasonToString(
+    ExpectationExclusionReason reason) {
+  switch (reason) {
+    case ExpectationExclusionReason::kCallCountExhausted:
+      return "call count exhausted (saturated or retired)";
+    case ExpectationExclusionReason::kPrerequisitesUnsatisfied:
+      return "pre-requisites not satisfied";
+    case ExpectationExclusionReason::kArgumentsMismatch:
+      return "arguments do not match";
+  }
+  return "unknown reason";
+}
+
 template <typename F>
 class FunctionMocker;
 
@@ -1649,7 +1684,8 @@ class FunctionMocker<R(Args...)> final : public UntypedFunctionMockerBase {
     MutexLock l(g_gmock_mutex);
     TypedExpectation<F>* exp = this->FindMatchingExpectationLocked(args);
     if (exp == nullptr) {  // A match wasn't found.
-      this->FormatUnexpectedCallMessageLocked(args, what, why);
+      this->FormatUnexpectedCallMessageLocked(
+          args, what, why, this->CollectExclusionReasonsLocked());
       return nullptr;
     }
 
@@ -1691,21 +1727,67 @@ class FunctionMocker<R(Args...)> final : public UntypedFunctionMockerBase {
     return nullptr;
   }
 
+  // Returns, in expectation order, the reason each candidate expectation
+  // was excluded from handling a call that matched no expectation.
+  // Must only be called after FindMatchingExpectationLocked() has found
+  // no match; the expectation states it reads are unchanged since that
+  // selection pass.  This is a read-only diagnostic: classifying the
+  // reasons never re-runs user matchers and never mutates expectation
+  // state (in particular, retired expectations are not reactivated), so
+  // the original selection and the failure count are unaffected.
+  std::vector<ExpectationExclusionReason> CollectExclusionReasonsLocked()
+      const GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
+    g_gmock_mutex.AssertHeld();
+    std::vector<ExpectationExclusionReason> reasons;
+    reasons.reserve(untyped_expectations_.size());
+    // See the definition of untyped_expectations_ for why access to
+    // it is unprotected here.
+    for (const std::shared_ptr<ExpectationBase>& untyped_expectation :
+         untyped_expectations_) {
+      reasons.push_back(ClassifyExclusionLocked(
+          *static_cast<const TypedExpectation<F>*>(
+              untyped_expectation.get())));
+    }
+    return reasons;
+  }
+
+  // Classifies why 'exp' (which was rejected by ShouldHandleArguments()
+  // during the selection pass) was excluded, using only the
+  // expectation's current state.  This is read-only: it never evaluates
+  // matchers and never changes expectation state.
+  static ExpectationExclusionReason ClassifyExclusionLocked(
+      const TypedExpectation<F>& exp)
+      GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
+    g_gmock_mutex.AssertHeld();
+    if (exp.is_retired() || exp.IsSaturated()) {
+      return ExpectationExclusionReason::kCallCountExhausted;
+    }
+    if (!exp.AllPrerequisitesAreSatisfied()) {
+      return ExpectationExclusionReason::kPrerequisitesUnsatisfied;
+    }
+    // The expectation is active, has call count left, and its
+    // pre-requisites are satisfied, yet it didn't handle the call: its
+    // argument matchers must have rejected the arguments.
+    return ExpectationExclusionReason::kArgumentsMismatch;
+  }
+
   // Returns a message that the arguments don't match any expectation.
-  void FormatUnexpectedCallMessageLocked(const ArgumentTuple& args,
-                                         ::std::ostream* os,
-                                         ::std::ostream* why) const
+  void FormatUnexpectedCallMessageLocked(
+      const ArgumentTuple& args, ::std::ostream* os, ::std::ostream* why,
+      const std::vector<ExpectationExclusionReason>& exclusion_reasons) const
       GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
     g_gmock_mutex.AssertHeld();
     *os << "\nUnexpected mock function call - ";
     DescribeDefaultActionTo(args, os);
-    PrintTriedExpectationsLocked(args, why);
+    PrintTriedExpectationsLocked(args, why, exclusion_reasons);
   }
 
   // Prints a list of expectations that have been tried against the
-  // current mock function call.
-  void PrintTriedExpectationsLocked(const ArgumentTuple& args,
-                                    ::std::ostream* why) const
+  // current mock function call, preceded by a read-only summary of why
+  // each candidate expectation was excluded.
+  void PrintTriedExpectationsLocked(
+      const ArgumentTuple& args, ::std::ostream* why,
+      const std::vector<ExpectationExclusionReason>& exclusion_reasons) const
       GTEST_EXCLUSIVE_LOCK_REQUIRED_(g_gmock_mutex) {
     g_gmock_mutex.AssertHeld();
     const size_t count = untyped_expectations_.size();
@@ -1713,6 +1795,17 @@ class FunctionMocker<R(Args...)> final : public UntypedFunctionMockerBase {
          << (count == 1 ? "expectation, but it didn't match"
                         : "expectations, but none matched")
          << ":\n";
+    if (exclusion_reasons.size() == count) {
+      // Read-only candidate explanation: the reasons were classified
+      // during the selection pass, so printing them does not re-run any
+      // matcher and does not change any expectation's state.
+      *why << "  Candidate expectations were excluded because of:\n";
+      for (size_t i = 0; i < count; i++) {
+        *why << "    expectation #" << i << ": "
+             << ExpectationExclusionReasonToString(exclusion_reasons[i])
+             << "\n";
+      }
+    }
     for (size_t i = 0; i < count; i++) {
       TypedExpectation<F>* const expectation =
           static_cast<TypedExpectation<F>*>(untyped_expectations_[i].get());

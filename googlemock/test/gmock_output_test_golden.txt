@@ -34,6 +34,8 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(1, 0)
           Returns: false
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar2(0, _))...
   Expected arg #0: is equal to 0
@@ -48,6 +50,8 @@ unknown file: Failure
 Unexpected mock function call - returning directly.
     Function call: Bar3(1, 0)
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar3(0, _))...
   Expected arg #0: is equal to 0
@@ -95,6 +99,9 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(1, 1)
           Returns: false
 Google Mock tried the following 2 expectations, but none matched:
+  Candidate expectations were excluded because of:
+    expectation #0: call count exhausted (saturated or retired)
+    expectation #1: arguments do not match
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(_, _))...
          Expected: the expectation is active
@@ -117,6 +124,9 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(1, 0)
           Returns: false
 Google Mock tried the following 2 expectations, but none matched:
+  Candidate expectations were excluded because of:
+    expectation #0: pre-requisites not satisfied
+    expectation #1: pre-requisites not satisfied
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(0, 0))...
   Expected arg #0: is equal to 0
@@ -139,6 +149,9 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(1, 0)
           Returns: false
 Google Mock tried the following 2 expectations, but none matched:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
+    expectation #1: pre-requisites not satisfied
 
 FILE:#: tried expectation #0: EXPECT_CALL(foo_, Bar2(0, 0))...
   Expected arg #0: is equal to 0
@@ -182,6 +195,8 @@ Unexpected mock function call - returning default value.
     Function call: Bar(@0x# "Ho", 0, -0.1)
           Returns: '\0'
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar(Ref(s), _, Ge(0)))...
   Expected arg #0: references the variable @0x# "Hi"
@@ -199,6 +214,8 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(2, 3)
           Returns: false
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar2(Ge(2), Ge(1)))...
     Expected args: are a pair where the first >= the second
@@ -214,6 +231,8 @@ Unexpected mock function call - returning default value.
     Function call: Bar2(1, 3)
           Returns: false
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar2(Ge(2), Ge(1)))...
   Expected arg #0: is >= 2
@@ -232,6 +251,8 @@ FILE:#:
     Function call: Bar2(1, 0)
           Returns: false
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar2(2, 2))...
   Expected arg #0: is equal to 2
@@ -248,6 +269,8 @@ FILE:#:
     Function call: Bar2(0, 0)
           Returns: true
 Google Mock tried the following 1 expectation, but it didn't match:
+  Candidate expectations were excluded because of:
+    expectation #0: arguments do not match
 
 FILE:#: EXPECT_CALL(foo_, Bar2(2, 2))...
   Expected arg #0: is equal to 2
