@@ -344,6 +344,14 @@ GTEST_DEFINE_bool_(
     brief, testing::internal::BoolFromGTestEnv("brief", false),
     "True if only test failures should be displayed in text output.");
 
+GTEST_DEFINE_int32_(
+    xml_property_value_max_length,
+    testing::internal::Int32FromGTestEnv("xml_property_value_max_length", -1),
+    "The maximum number of UTF-8 bytes emitted for each recorded test "
+    "property value in the XML report. Longer values are truncated at a "
+    "UTF-8 code point boundary and marked with an ellipsis. A negative "
+    "value (the default) disables truncation.");
+
 GTEST_DEFINE_bool_(print_time,
                    testing::internal::BoolFromGTestEnv("print_time", true),
                    "True if and only if " GTEST_NAME_
@@ -4170,6 +4178,40 @@ std::string XmlUnitTestResultPrinter::RemoveInvalidXmlCharacters(
   return output;
 }
 
+// Truncates a UTF-8 encoded string to at most max_bytes bytes. The
+// truncation point is moved back to the start of the UTF-8 code point
+// it would otherwise split, so the result always ends at a complete
+// code point boundary. When truncation occurs, an ellipsis ("...") is
+// appended to mark it. The input is assumed to be UTF-8; continuation
+// bytes (of the form 0b10xxxxxx) are never separated from their lead
+// byte.
+static std::string TruncateUtf8AtCodePointBoundary(const std::string& str,
+                                                   size_t max_bytes) {
+  if (str.size() <= max_bytes) {
+    return str;
+  }
+  size_t end = max_bytes;
+  while (end > 0 && (static_cast<unsigned char>(str[end]) & 0xC0) == 0x80) {
+    --end;
+  }
+  return str.substr(0, end) + "...";
+}
+
+// Returns the property value to emit in the XML report: the recorded
+// value itself, truncated to the limit configured via the
+// --gtest_xml_property_value_max_length flag if one is set. The
+// recorded property is never modified; truncation only affects the
+// generated report and happens before XML escaping, so escape entities
+// produced by escaping are never truncated themselves.
+static std::string FormatPropertyValueForXml(const std::string& value) {
+  const int32_t max_length = GTEST_FLAG_GET(xml_property_value_max_length);
+  if (max_length < 0) {
+    return value;
+  }
+  return TruncateUtf8AtCodePointBoundary(value,
+                                         static_cast<size_t>(max_length));
+}
+
 // The following routines generate an XML representation of a UnitTest
 // object.
 //
@@ -4525,7 +4567,9 @@ void XmlUnitTestResultPrinter::OutputXmlTestProperties(
     const TestProperty& property = result.GetTestProperty(i);
     *stream << indent << "  <" << kProperty;
     *stream << " name=\"" << EscapeXmlAttribute(property.key()) << "\"";
-    *stream << " value=\"" << EscapeXmlAttribute(property.value()) << "\"";
+    *stream << " value=\""
+            << EscapeXmlAttribute(FormatPropertyValueForXml(property.value()))
+            << "\"";
     *stream << "/>\n";
   }
   *stream << indent << "</" << kProperties << ">\n";
@@ -6755,6 +6799,12 @@ static const char kColorEncodedHelpMessage[] =
     "      Generate a JSON or XML report in the given directory or with the "
     "given\n"
     "      file name. @YFILE_PATH@D defaults to @Gtest_detail.xml@D.\n"
+    "  @G--" GTEST_FLAG_PREFIX_
+    "xml_property_value_max_length=@Y[NUMBER]@D\n"
+    "      Truncate recorded property values in the XML report to at most\n"
+    "      NUMBER UTF-8 bytes, ending at a complete UTF-8 code point and\n"
+    "      marked with an ellipsis. A negative value (the default) disables\n"
+    "      truncation.\n"
 #if GTEST_CAN_STREAM_RESULTS_
     "  @G--" GTEST_FLAG_PREFIX_
     "stream_result_to=@YHOST@G:@YPORT@D\n"
@@ -6827,6 +6877,7 @@ static bool ParseGoogleTestFlag(const char* const arg) {
   GTEST_INTERNAL_PARSE_FLAG(list_tests);
   GTEST_INTERNAL_PARSE_FLAG(output);
   GTEST_INTERNAL_PARSE_FLAG(brief);
+  GTEST_INTERNAL_PARSE_FLAG(xml_property_value_max_length);
   GTEST_INTERNAL_PARSE_FLAG(print_time);
   GTEST_INTERNAL_PARSE_FLAG(print_utf8);
   GTEST_INTERNAL_PARSE_FLAG(random_seed);

@@ -67,7 +67,7 @@ else:
   sys.argv.remove(NO_STACKTRACE_SUPPORT_FLAG)
 
 EXPECTED_NON_EMPTY_XML = """<?xml version="1.0" encoding="UTF-8"?>
-<testsuites tests="28" failures="5" disabled="2" errors="0" time="*" timestamp="*" name="AllTests">
+<testsuites tests="29" failures="5" disabled="2" errors="0" time="*" timestamp="*" name="AllTests">
   <properties>
     <property name="ad_hoc_property" value="42"/>
   </properties>
@@ -220,6 +220,13 @@ Expected equality of these values:
   </testsuite>
   <testsuite name="Single/TypeParameterizedTestSuite/1" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="*" timestamp="*">
     <testcase name="HasTypeParamAttribute" file="gtest_xml_output_unittest_.cc" line="200" type_param="*" status="run" result="completed" time="*" timestamp="*" classname="Single/TypeParameterizedTestSuite/1" />
+  </testsuite>
+  <testsuite name="PropertyTruncationTest" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="*" timestamp="*">
+    <testcase name="RecordsUtf8PropertyValue" file="gtest_xml_output_unittest_.cc" line="213" status="run" result="completed" time="*" timestamp="*" classname="PropertyTruncationTest">
+      <properties>
+        <property name="tiny" value="a\U0001F600&quot;&amp;z"/>
+      </properties>
+    </testcase>
   </testsuite>
 </testsuites>""" % {
     'stack': STACK_TRACE_TEMPLATE,
@@ -431,6 +438,83 @@ class GTestXMLOutputUnitTest(gtest_xml_test_utils.GTestXMLTestCase):
         0,
         extra_env={SHARD_INDEX_ENV_VAR: '0', TOTAL_SHARDS_ENV_VAR: '10'},
     )
+
+  def _GetPropertyValueFromXml(self, extra_args):
+    """Returns the single recorded property value from the generated XML.
+
+    Runs the test program with the given extra arguments and a filter that
+    selects only PropertyTruncationTest.RecordsUtf8PropertyValue, then
+    returns the value attribute of the recorded 'tiny' property. The
+    fixture program exits with a non-zero code if the recorded property
+    was modified by report generation, so a successful run also proves
+    that the internal record is left unchanged.
+
+    Args:
+      extra_args: Additional command line flags for the test program.
+
+    Returns:
+      A (value, xml_path) pair with the property value and the report path.
+    """
+    xml_path = os.path.join(
+        gtest_test_utils.GetTempDir(), GTEST_PROGRAM_NAME + 'out.xml'
+    )
+    actual = self._GetXmlOutput(
+        GTEST_PROGRAM_NAME,
+        ['%s=PropertyTruncationTest.*' % GTEST_FILTER_FLAG] + extra_args,
+        {},
+        0,
+    )
+    properties = actual.getElementsByTagName('property')
+    tiny_properties = [
+        p for p in properties if p.getAttribute('name') == 'tiny'
+    ]
+    self.assertEqual(1, len(tiny_properties))
+    value = tiny_properties[0].getAttribute('value')
+    actual.unlink()
+    return value, xml_path
+
+  def testXmlPropertyValueNotTruncatedByDefault(self):
+    """Verifies that property values are emitted in full by default.
+
+    Runs the property-truncation fixture without configuring a limit and
+    checks that the XML report keeps the whole recorded value, including
+    the emoji, the quote and the ampersand.
+    """
+    value, _ = self._GetPropertyValueFromXml([])
+    self.assertEqual('a\U0001F600"&z', value)
+
+  def testXmlPropertyValueTruncation(self):
+    """Verifies truncation of property values at a UTF-8 code point boundary.
+
+    Runs the property-truncation fixture with a byte limit and checks that
+    the XML report is parseable, stops at a complete UTF-8 code point,
+    marks the truncation, and escapes special characters after truncation
+    so that escape entities are never truncated themselves.
+    """
+    # 7 bytes cover 'a', the 4-byte emoji, the quote and the ampersand.
+    value, xml_path = self._GetPropertyValueFromXml(
+        ['--gtest_xml_property_value_max_length=7']
+    )
+    self.assertEqual('a\U0001F600"&...', value)
+    # The raw report must be valid UTF-8 (no split code points) and the
+    # escape entities produced after truncation must appear in full.
+    with open(xml_path, 'rb') as xml_file:
+      raw_report = xml_file.read().decode('utf-8')
+    self.assertIn('a\U0001F600&quot;&amp;...', raw_report)
+
+  def testXmlPropertyValueTruncationAtCodePointBoundary(self):
+    """Verifies truncation never splits a multi-byte UTF-8 code point.
+
+    A 3-byte limit would cut the 4-byte emoji in half, so the truncation
+    point must be moved back to the start of the emoji.
+    """
+    value, xml_path = self._GetPropertyValueFromXml(
+        ['--gtest_xml_property_value_max_length=3']
+    )
+    self.assertEqual('a...', value)
+    with open(xml_path, 'rb') as xml_file:
+      raw_report = xml_file.read().decode('utf-8')
+    self.assertIn('value="a..."', raw_report)
 
   def _GetXmlOutput(
       self, gtest_prog_name, extra_args, extra_env, expected_exit_code

@@ -154,6 +154,8 @@ class GTestFlagSaver {
     list_tests_ = GTEST_FLAG_GET(list_tests);
     output_ = GTEST_FLAG_GET(output);
     brief_ = GTEST_FLAG_GET(brief);
+    xml_property_value_max_length_ =
+        GTEST_FLAG_GET(xml_property_value_max_length);
     print_time_ = GTEST_FLAG_GET(print_time);
     print_utf8_ = GTEST_FLAG_GET(print_utf8);
     random_seed_ = GTEST_FLAG_GET(random_seed);
@@ -180,6 +182,8 @@ class GTestFlagSaver {
     GTEST_FLAG_SET(list_tests, list_tests_);
     GTEST_FLAG_SET(output, output_);
     GTEST_FLAG_SET(brief, brief_);
+    GTEST_FLAG_SET(xml_property_value_max_length,
+                   xml_property_value_max_length_);
     GTEST_FLAG_SET(print_time, print_time_);
     GTEST_FLAG_SET(print_utf8, print_utf8_);
     GTEST_FLAG_SET(random_seed, random_seed_);
@@ -206,6 +210,7 @@ class GTestFlagSaver {
   bool list_tests_;
   std::string output_;
   bool brief_;
+  int32_t xml_property_value_max_length_;
   bool print_time_;
   bool print_utf8_;
   int32_t random_seed_;

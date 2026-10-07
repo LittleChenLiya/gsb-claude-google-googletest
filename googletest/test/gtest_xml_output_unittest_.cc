@@ -203,6 +203,23 @@ typedef testing::Types<int, long> TypeParameterizedTestSuiteTypes;  // NOLINT
 INSTANTIATE_TYPED_TEST_SUITE_P(Single, TypeParameterizedTestSuite,
                                TypeParameterizedTestSuiteTypes);
 
+// A tiny property value containing a 4-byte UTF-8 emoji (U+1F600), a
+// double quote and an ampersand, used to verify that recorded property
+// values can be truncated to a configurable number of UTF-8 bytes in
+// the XML report: truncation must stop at a complete UTF-8 code point,
+// be marked, and happen before XML attribute escaping.
+const char kTinyPropertyValue[] = "a\xF0\x9F\x98\x80\"&z";  // a😀"&z
+
+TEST(PropertyTruncationTest, RecordsUtf8PropertyValue) {
+  RecordProperty("tiny", kTinyPropertyValue);
+  // Truncation (if configured) only affects the generated XML report;
+  // the recorded property itself must keep the original value.
+  const testing::TestResult* const result =
+      testing::UnitTest::GetInstance()->current_test_info()->result();
+  ASSERT_EQ(1, result->test_property_count());
+  EXPECT_STREQ(kTinyPropertyValue, result->GetTestProperty(0).value());
+}
+
 int main(int argc, char** argv) {
   InitGoogleTest(&argc, argv);
 
@@ -211,7 +228,25 @@ int main(int argc, char** argv) {
     delete listeners.Release(listeners.default_xml_generator());
   }
   testing::Test::RecordProperty("ad_hoc_property", "42");
-  return RUN_ALL_TESTS();
+  const int test_result = RUN_ALL_TESTS();
+
+  // The XML report generator may truncate property values, but the
+  // recorded property must still hold the original value afterwards.
+  for (int i = 0; i < UnitTest::GetInstance()->total_test_suite_count(); ++i) {
+    const testing::TestSuite* const suite =
+        UnitTest::GetInstance()->GetTestSuite(i);
+    if (strcmp(suite->name(), "PropertyTruncationTest") != 0) {
+      continue;
+    }
+    const testing::TestResult* const result =
+        suite->GetTestInfo(0)->result();
+    if (result->test_property_count() == 1 &&
+        strcmp(result->GetTestProperty(0).value(), kTinyPropertyValue) != 0) {
+      fprintf(stderr, "Recorded property value was modified by reporting.\n");
+      return 2;
+    }
+  }
+  return test_result;
 }
 
 // clang-format on

@@ -114,6 +114,12 @@ GTEST_DECLARE_bool_(list_tests);
 // in addition to its normal textual output.
 GTEST_DECLARE_string_(output);
 
+// This flag specifies the maximum number of UTF-8 bytes emitted for each
+// recorded test property value in the XML report. Longer values are
+// truncated at a UTF-8 code point boundary and marked with an ellipsis.
+// A negative value (the default) disables truncation.
+GTEST_DECLARE_int32_(xml_property_value_max_length);
+
 // This flags control whether Google Test prints only test failures.
 GTEST_DECLARE_bool_(brief);
 

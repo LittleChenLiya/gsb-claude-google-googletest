@@ -867,6 +867,15 @@ will output XML like this:
 >     of all test suites (e.g. in a test environment), it will be attributed to
 >     the top-level XML element.
 
+The recorded property values can be truncated in the generated XML report by
+setting the `--gtest_xml_property_value_max_length` flag (or the
+`GTEST_XML_PROPERTY_VALUE_MAX_LENGTH` environment variable) to a non-negative
+number of UTF-8 bytes. Values longer than the limit are truncated at a
+complete UTF-8 code point boundary and marked with an ellipsis (`...`); the
+recorded property itself is left unchanged, and XML escaping is applied after
+truncation so escape entities are never cut in half. The default value of `-1`
+disables truncation.
+
 ## Sharing Resources Between Tests in the Same Test Suite
 
 GoogleTest creates a new test fixture object for each test in order to make
