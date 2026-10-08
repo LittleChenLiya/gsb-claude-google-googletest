@@ -866,6 +866,13 @@ will output XML like this:
 >     attributed to the XML element for the test suite. If it's called outside
 >     of all test suites (e.g. in a test environment), it will be attributed to
 >     the top-level XML element.
+> *   The recorded string is stored unchanged. By default it is emitted to the
+>     XML report in full. Setting the `--gtest_property_value_limit` flag (or
+>     the `GTEST_PROPERTY_VALUE_LIMIT` environment variable) to a non-negative
+>     number limits how many bytes each property value may occupy in the XML
+>     report. Longer values are shortened on a complete UTF-8 code point
+>     boundary and suffixed with `...`; XML escaping is applied afterwards, so
+>     the marker and XML entities are never cut in half.
 
 ## Sharing Resources Between Tests in the Same Test Suite
 

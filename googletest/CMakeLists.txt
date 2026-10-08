@@ -315,4 +315,7 @@ if (gtest_build_tests)
   cxx_executable(gtest_xml_output_unittest_ test gtest)
   py_test(gtest_xml_output_unittest --no_stacktrace_support)
   py_test(googletest-json-output-unittest --no_stacktrace_support)
+
+  cxx_executable(gtest_xml_truncate_test_ test gtest_main)
+  py_test(gtest_xml_truncate_test)
 endif()

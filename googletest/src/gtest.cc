@@ -355,6 +355,15 @@ GTEST_DEFINE_bool_(print_utf8,
                    " prints UTF8 characters as text.");
 
 GTEST_DEFINE_int32_(
+    property_value_limit,
+    testing::internal::Int32FromGTestEnv("property_value_limit", -1),
+    "Limits the number of bytes used to output the value of a "
+    "RecordProperty() entry in XML.  A value of -1 (the default) means no "
+    "limit; the value is output in full.  When non-negative, values longer "
+    "than the limit are truncated on a complete UTF-8 code point boundary and "
+    "marked with \"...\".  The value recorded internally is never modified.");
+
+GTEST_DEFINE_int32_(
     random_seed, testing::internal::Int32FromGTestEnv("random_seed", 0),
     "Random number seed to use when shuffling test orders.  Must be in range "
     "[1, 99999], or 0 to use a seed based on the current time.");
@@ -3979,6 +3988,76 @@ void TestEventRepeater::OnTestIterationEnd(const UnitTest& unit_test,
 // End TestEventRepeater
 
 #if GTEST_HAS_FILE_SYSTEM
+namespace {
+
+// The marker appended to property values that are shortened for output.
+const char kTruncatedPropertyValueSuffix[] = "...";
+
+// Returns the length, in bytes, of the UTF-8 code point starting at
+// str[index].  The byte at str[index] is assumed to be a UTF-8 lead byte.
+// Bytes that are not part of any valid UTF-8 encoding are treated as
+// one-byte code points, so that truncation can always stop on a boundary
+// without producing stray continuation bytes.
+size_t Utf8CodePointLength(const std::string& str, size_t index) {
+  const unsigned char lead = static_cast<unsigned char>(str[index]);
+  size_t length;
+  if (lead < 0x80) {
+    length = 1;
+  } else if ((lead >> 5) == 0x6) {
+    length = 2;
+  } else if ((lead >> 4) == 0xE) {
+    length = 3;
+  } else if ((lead >> 3) == 0x1E) {
+    length = 4;
+  } else {
+    // Stray continuation bytes and invalid lead bytes count as one byte.
+    length = 1;
+  }
+  // Never run past the end of the string.
+  for (size_t i = 1; i < length; ++i) {
+    if (index + i >= str.size() ||
+        (static_cast<unsigned char>(str[index + i]) >> 6) != 0x2) {
+      return i;
+    }
+  }
+  return length;
+}
+
+// Returns a copy of value shortened so that, together with
+// kTruncatedPropertyValueSuffix, it occupies at most byte_limit bytes.
+// Truncation always happens on a complete UTF-8 code point boundary, so the
+// returned string never ends in the middle of a multi-byte code point.
+// Values that already fit are returned unchanged and are not marked.
+std::string TruncateUtf8ForOutput(const std::string& value,
+                                  int32_t byte_limit) {
+  if (byte_limit < 0 || value.size() <= static_cast<size_t>(byte_limit)) {
+    return value;
+  }
+
+  const size_t suffix_size = std::strlen(kTruncatedPropertyValueSuffix);
+  if (static_cast<size_t>(byte_limit) <= suffix_size) {
+    // There is not even enough room for the marker; output just the marker
+    // (clamped to the limit) so the result never exceeds the limit and
+    // remains valid ASCII.
+    return std::string(kTruncatedPropertyValueSuffix,
+                       static_cast<size_t>(byte_limit));
+  }
+
+  const size_t content_limit =
+      static_cast<size_t>(byte_limit) - suffix_size;
+  size_t length = 0;
+  while (length < value.size()) {
+    const size_t code_point_size = Utf8CodePointLength(value, length);
+    if (length + code_point_size > content_limit) {
+      break;
+    }
+    length += code_point_size;
+  }
+  return value.substr(0, length) + kTruncatedPropertyValueSuffix;
+}
+
+}  // namespace
+
 // This class generates an XML output file.
 class XmlUnitTestResultPrinter : public EmptyTestEventListener {
  public:
@@ -4523,9 +4602,15 @@ void XmlUnitTestResultPrinter::OutputXmlTestProperties(
   *stream << indent << "<" << kProperties << ">\n";
   for (int i = 0; i < result.test_property_count(); ++i) {
     const TestProperty& property = result.GetTestProperty(i);
+    // Truncate the value (if a limit is configured) before XML escaping so
+    // that the truncation marker is never cut and no XML entity such as
+    // "&amp;" can be split in half.  The value stored in the TestProperty
+    // itself is left untouched.
+    const std::string value = TruncateUtf8ForOutput(
+        property.value(), GTEST_FLAG_GET(property_value_limit));
     *stream << indent << "  <" << kProperty;
     *stream << " name=\"" << EscapeXmlAttribute(property.key()) << "\"";
-    *stream << " value=\"" << EscapeXmlAttribute(property.value()) << "\"";
+    *stream << " value=\"" << EscapeXmlAttribute(value) << "\"";
     *stream << "/>\n";
   }
   *stream << indent << "</" << kProperties << ">\n";
@@ -6750,6 +6835,15 @@ static const char kColorEncodedHelpMessage[] =
     "print_utf8=0@D\n"
     "      Don't print UTF-8 characters as text.\n"
     "  @G--" GTEST_FLAG_PREFIX_
+    "property_value_limit=@Y[NUMBER]@D\n"
+    "      Truncate RecordProperty() values in the XML report to at most "
+    "NUMBER\n"
+    "      bytes, stopping on a complete UTF-8 code point and appending "
+    "\"...\".\n"
+    "      A value of -1 (the default) keeps the complete value. The value "
+    "stored\n"
+    "      internally is never modified.\n"
+    "  @G--" GTEST_FLAG_PREFIX_
     "output=@Y(@Gjson@Y|@Gxml@Y)[@G:@YDIRECTORY_PATH@G" GTEST_PATH_SEP_
     "@Y|@G:@YFILE_PATH]@D\n"
     "      Generate a JSON or XML report in the given directory or with the "
@@ -6829,6 +6923,7 @@ static bool ParseGoogleTestFlag(const char* const arg) {
   GTEST_INTERNAL_PARSE_FLAG(brief);
   GTEST_INTERNAL_PARSE_FLAG(print_time);
   GTEST_INTERNAL_PARSE_FLAG(print_utf8);
+  GTEST_INTERNAL_PARSE_FLAG(property_value_limit);
   GTEST_INTERNAL_PARSE_FLAG(random_seed);
   GTEST_INTERNAL_PARSE_FLAG(repeat);
   GTEST_INTERNAL_PARSE_FLAG(shard_index);
